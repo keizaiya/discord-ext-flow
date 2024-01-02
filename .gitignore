@@ -1,3 +1,10 @@
+# pdm
+.pdm-python
+pdm.lock
+
+# vscode
+.vscode
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
