@@ -5,7 +5,9 @@ __version__ = '0.0.0'
 from typing import TYPE_CHECKING
 
 from .controller import *
+from .modal import *
 from .model import *
+from .pages import *
 
 if TYPE_CHECKING:
     __all__ = (
@@ -19,6 +21,11 @@ if TYPE_CHECKING:
         'ChannelSelect',
         'ModelBase',
         'Controller',
+        'TextInput',
+        'ModalConfig',
+        'send_modal',
+        'Paginator',
+        'paginator',
     )
 else:
-    __all__ = model.__all__ + controller.__all__
+    __all__ = model.__all__ + controller.__all__ + modal.__all__ + pages.__all__
