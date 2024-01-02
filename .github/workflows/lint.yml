@@ -1,0 +1,44 @@
+name: lint
+
+on:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    name: check ${{ matrix.python-version }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install PDM
+        uses: pdm-project/setup-pdm@v3
+
+      - name: Install Dependencies
+        run: |
+          pdm install
+
+      - name: pyright
+        run: |
+          pdm run pyright .
+
+      - name: mypy
+        run: |
+          pdm run mypy .
+
+      - name: ruff lint
+        run: |
+          pdm run ruff check
+
+      - name: ruff format
+        run: |
+          pdm run ruff format --check
