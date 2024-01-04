@@ -147,6 +147,9 @@ combine-as-imports = true
 [tool.ruff.format]
 quote-style = "single"
 
+[tool.pdm.build]
+includes = ["discord"]
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
