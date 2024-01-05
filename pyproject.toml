@@ -127,6 +127,8 @@ ignore = [
 "example/*.py" = [
     # Ignore missing docstring in example
     "D1",
+    # Allow use non cryptographic random
+    "S311",
     # Allow use print() in example
     "T201",
     # Allow namerspace package(examples are not package)

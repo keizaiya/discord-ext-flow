@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from os import getenv
+from random import randint
 from typing import TYPE_CHECKING
 
 from discord import Client, Embed, Intents, Interaction
@@ -12,20 +13,25 @@ if TYPE_CHECKING:
 
 
 class Pagination(ModelBase):
-    @paginator
-    def message(self) -> Paginator[str]:
-        return Paginator(self.message_builder, values=tuple(str(i) for i in range(100)))
+    count: int
 
-    def message_builder(self, msgs: Sequence[str], current: int, max_page: int) -> Message:
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    @paginator
+    def message(self) -> Paginator[int]:
+        return Paginator(self.message_builder, values=tuple(range(self.count)))
+
+    def message_builder(self, msgs: Sequence[int], current: int, max_page: int) -> Message:
         return Message(
-            embeds=[Embed(title=f'{current}/{max_page}', description='\n'.join(msgs))],
-            items=tuple(Button(label=f'{int(i)+1}', callback=self.button_callback(i)) for i in msgs),
+            embeds=[Embed(title=f'{current + 1}/{max_page}', description='\n'.join(str(i + 1) for i in msgs))],
+            items=tuple(Button(label=f'{i+1}', callback=self.button_callback(i)) for i in msgs),
             disable_items=True,
         )
 
-    def button_callback(self, state: str) -> Callable[[Interaction[Client]], Message]:
+    def button_callback(self, state: int) -> Callable[[Interaction[Client]], Message]:
         def callback(_: Interaction[Client]) -> Message:
-            return Message(content=state)
+            return Message(content=str(state + 1))
 
         return callback
 
@@ -51,7 +57,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='basic')
 async def basic(interaction: Interaction[Client]) -> None:
-    await Controller(Pagination()).invoke(interaction)
+    await Controller(Pagination(randint(1, 100))).invoke(interaction)
 
 
 client.run(getenv('TOKEN', ''))
