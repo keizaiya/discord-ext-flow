@@ -87,7 +87,7 @@ class Paginator(Generic[T]):
         return msg._replace(items=items + control_items, edit_original=edit_original)
 
     def _set_page_number(self, page_number: int) -> None:
-        if 0 <= page_number <= self.max_page:
+        if 0 <= page_number < self.max_page:
             self.current_page = page_number
 
     async def _go_to_first_page(self, _: Interaction[Client]) -> Message:
