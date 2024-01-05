@@ -70,17 +70,18 @@ class Paginator(Generic[T]):
         if len(items) > 20:
             raise ValueError('Message.items must be less than 20')
 
+        disabled = self.max_page == 0
         control_items: tuple[Button, ...] = (
-            Button(emoji=FIRST_EMOJI, row=4, callback=self._go_to_first_page),
-            Button(emoji=PREVIOUS_EMOJI, row=4, callback=self._go_to_previous_page),
+            Button(emoji=FIRST_EMOJI, row=4, disabled=disabled, callback=self._go_to_first_page),
+            Button(emoji=PREVIOUS_EMOJI, row=4, disabled=disabled, callback=self._go_to_previous_page),
             Button(
                 label=f'{self.current_page + 1}/{self.max_page}' if self.max_page > 0 else '1',
                 row=4,
-                disabled=self.max_page == 0,
+                disabled=disabled,
                 callback=self._go_to_page,
             ),
-            Button(emoji=NEXT_EMOJI, row=4, callback=self._go_to_next_page),
-            Button(emoji=LAST_EMOJI, row=4, callback=self._go_to_last_page),
+            Button(emoji=NEXT_EMOJI, row=4, disabled=disabled, callback=self._go_to_next_page),
+            Button(emoji=LAST_EMOJI, row=4, disabled=disabled, callback=self._go_to_last_page),
         )
 
         return msg._replace(items=items + control_items)
