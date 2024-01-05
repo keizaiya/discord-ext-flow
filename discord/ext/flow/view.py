@@ -176,9 +176,9 @@ class _View(ui.View):
             return
 
         if isinstance(m, Message):
-            self.clear_items()
-            self.set_items(m.items or ())
             if m.edit_original:
+                self.clear_items()
+                self.set_items(m.items or ())
                 await interaction.response.edit_message(
                     content=m.content,
                     embeds=m.embeds or (),
@@ -189,7 +189,7 @@ class _View(ui.View):
                 )
             else:
                 kwargs = m._to_dict()
-                kwargs['view'] = self
+                kwargs['view'] = _View(config=self.config, items=m.items or ())
                 await interaction.response.send_message(**kwargs)
             return
 
