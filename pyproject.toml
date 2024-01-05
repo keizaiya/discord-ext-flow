@@ -87,6 +87,8 @@ ignore = [
     "D107",
     # Allow use string/f-string/str.format
     "EM",
+    # Allow use boolean type hint in positional argument
+    "FBT",
     # Allow private member access (e.g. _foo)
     "SLF001",
     # Allow use constant variable
