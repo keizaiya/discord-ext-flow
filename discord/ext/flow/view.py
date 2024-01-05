@@ -191,6 +191,7 @@ class _View(ui.View):
                 kwargs = m._to_dict()
                 kwargs['view'] = _View(config=self.config, items=m.items or ())
                 await interaction.response.send_message(**kwargs)
+                self.stop()
             return
 
         self.result = (m, interaction)
