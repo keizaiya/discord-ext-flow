@@ -67,8 +67,8 @@ class Paginator(Generic[T]):
             self.max_page,
         )
         items = () if msg.items is None else tuple(msg.items)
-        if len(items) > 10:
-            raise ValueError('Message.items must be less than 10')
+        if len(items) > 20:
+            raise ValueError('Message.items must be less than 20')
 
         control_items: tuple[Button, ...] = (
             Button(emoji=FIRST_EMOJI, row=4, callback=self._go_to_first_page),
