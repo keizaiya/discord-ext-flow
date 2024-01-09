@@ -9,7 +9,7 @@ from discord.app_commands import CommandTree
 from discord.ext.flow import Button, Controller, Message, ModelBase, Paginator, paginator
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Awaitable, Callable, Sequence
 
 
 class Pagination(ModelBase):
@@ -29,9 +29,11 @@ class Pagination(ModelBase):
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Callable[[Interaction[Client]], Message]:
-        def callback(_: Interaction[Client]) -> Message:
-            return Message(content=str(state + 1))
+    def button_callback(self, state: int) -> Callable[[Interaction[Client]], Awaitable[bool]]:
+        async def callback(interaction: Interaction[Client]) -> bool:
+            print(state + 1)
+            await interaction.response.defer()
+            return False
 
         return callback
 
