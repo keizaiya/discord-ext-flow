@@ -20,18 +20,18 @@ class Pagination(ModelBase):
 
     @paginator
     def message(self) -> Paginator[int]:
-        return Paginator(self.message_builder, values=tuple(range(self.count)))
+        return Paginator(self.message_builder, values=tuple(range(1, self.count + 1)))
 
     def message_builder(self, msgs: Sequence[int], current: int, max_page: int) -> Message:
         return Message(
-            embeds=[Embed(title=f'{current + 1}/{max_page}', description='\n'.join(str(i + 1) for i in msgs))],
-            items=tuple(Button(label=f'{i+1}', callback=self.button_callback(i)) for i in msgs),
+            embeds=[Embed(title=f'{current}/{max_page}', description='\n'.join(str(i) for i in msgs))],
+            items=tuple(Button(label=f'{i}', callback=self.button_callback(i)) for i in msgs),
             disable_items=True,
         )
 
     def button_callback(self, state: int) -> Callable[[Interaction[Client]], Awaitable[bool]]:
         async def callback(interaction: Interaction[Client]) -> bool:
-            print(state + 1)
+            print(state)
             await interaction.response.defer()
             return False
 
