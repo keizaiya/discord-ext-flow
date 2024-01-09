@@ -164,15 +164,21 @@ class _View(ui.View):
                     self.add_item(_ChannelSelect(item))
 
     async def set_result(self, ret: CallbackReturnType, interaction: Interaction[Client]) -> None:
-        m: ModelBase | Message | None
+        m: ModelBase | Message | bool | None
         if isinstance(ret, tuple) and not isinstance(ret, Message):
             m, interaction = ret
         else:
             m = ret
 
+        if (isinstance(m, bool) or m is None) and not interaction.response.is_done():
+            raise RuntimeError('Callback MUST consume interaction.')
+
+        if isinstance(m, bool):
+            if not m:
+                self.stop()
+            return
+
         if m is None:
-            if not interaction.response.is_done():
-                raise RuntimeError('Callback MUST consume interaction.')
             return
 
         if isinstance(m, Message):

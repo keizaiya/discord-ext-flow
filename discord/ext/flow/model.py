@@ -50,15 +50,16 @@ if TYPE_CHECKING:
         timeout: float | None
 
     # if callback return
-    # type                                 |
-    # -------------------------------------|-------------------------------------
-    # None                                 | Callback MUST consume interaction and lib wait next interaction.
+    # type                             |
+    # ---------------------------------|-----------------------------------------------------------------
+    # None | True                      | Callback MUST consume interaction and lib wait next interaction.
+    # False                            | Callback MUST consume interaction and stop flow.
     # ModelBase.items is set           | Send message and next flow.
     # ModelBase.items is not set       | Send message and stop flow.
-    # Message                              | Send message and same model.
+    # Message                          | Send message and same model.
     # ModelBase | Message, Interaction | same as before, but interaction is changed(MUST not consumed).
     CallbackReturnType: TypeAlias = (
-        'ModelBase | Message | None | tuple[ModelBase | Message | None, Interaction[Client]]'
+        'ModelBase | Message | bool | None | tuple[ModelBase | Message |  bool | None, Interaction[Client]]'
     )
 
     class MessageKwargs(TypedDict, total=False):
