@@ -57,7 +57,8 @@ class Paginator(Generic[T]):
         self.values = values
         self.current_page = start_page
         self.per_page = per_page
-        self.max_page = len(values) // per_page
+        div, mod = divmod(len(values), per_page)
+        self.max_page = div + (mod != 0)
 
     async def _message(self, *, edit_original: bool = False) -> Message:
         msg = await maybe_coroutine(
