@@ -153,7 +153,7 @@ class Select:
         - options is keyword only argument.
     """
 
-    callback: Callable[[Interaction[Client], Sequence[str]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[str]], MaybeAwaitable[CallbackReturnType]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -167,7 +167,7 @@ class Select:
 class UserSelect:
     """discord.ui.UserSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], Sequence[User | Member]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[User | Member]], MaybeAwaitable[CallbackReturnType]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -182,7 +182,7 @@ class UserSelect:
 class RoleSelect:
     """discord.ui.RoleSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], Sequence[Role]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[Role]], MaybeAwaitable[CallbackReturnType]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -197,7 +197,7 @@ class RoleSelect:
 class MentionableSelect:
     """discord.ui.MentionableSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], Sequence[User | Member | Role]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[User | Member | Role]], MaybeAwaitable[CallbackReturnType]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -213,7 +213,7 @@ class ChannelSelect:
     """discord.ui.ChannelSelect with callback for Message.items."""
 
     callback: Callable[
-        [Interaction[Client], Sequence[AppCommandChannel | AppCommandThread]], MaybeAwaitable[CallbackReturnType]
+        [Interaction[Client], list[AppCommandChannel | AppCommandThread]], MaybeAwaitable[CallbackReturnType]
     ]
     placeholder: str | None = None
     custom_id: str | None = None
