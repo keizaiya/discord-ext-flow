@@ -5,16 +5,16 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from discord.utils import maybe_coroutine
 
 from .modal import ModalConfig, TextInput, send_modal
-from .model import Button, Message, ModelBase
+from .model import Button, Message
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-    from typing import Any
+    from typing import Any, ParamSpec
 
     from discord import Client, Interaction
     from discord.utils import MaybeAwaitableFunc
 
-    S = TypeVar('S', bound=ModelBase)
+    P = ParamSpec('P')
 
 __all__ = ('Paginator', 'paginator')
 
@@ -123,7 +123,7 @@ class Paginator(Generic[T]):
         return await self._message(edit_original=True)
 
 
-def paginator(func: MaybeAwaitableFunc[[S], Paginator[Any]]) -> Callable[[S], Awaitable[Message]]:
+def paginator(func: MaybeAwaitableFunc[P, Paginator[Any]]) -> Callable[P, Awaitable[Message]]:
     """Decorator to paginate message. This decorator wraps function in ModelBase.message.
 
     Args:
@@ -134,7 +134,7 @@ def paginator(func: MaybeAwaitableFunc[[S], Paginator[Any]]) -> Callable[[S], Aw
 
     """
 
-    async def wrapper(self: S) -> Message:
-        return await (await maybe_coroutine(func, self))._message()
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Message:
+        return await (await maybe_coroutine(func, *args, **kwargs))._message()
 
     return wrapper
