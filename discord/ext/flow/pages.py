@@ -38,6 +38,7 @@ class Paginator(Generic[T]):
         values (Sequence[T]): values to paginate.
         per_page (int, optional): items per page. Defaults to 10.
         start_page (int, optional): start page number. Defaults to 0.
+        row (int, optional): row number of control buttons. Defaults to 4.
     """
 
     message_builder: MaybeAwaitableFunc[[Sequence[T], int, int], Message]
@@ -52,6 +53,7 @@ class Paginator(Generic[T]):
         values: Sequence[T],
         per_page: int = 10,
         start_page: int = 0,
+        row: int = 4,
     ) -> None:
         self.message_builder = message_builder
         self.values = values
@@ -59,6 +61,7 @@ class Paginator(Generic[T]):
         self.per_page = per_page
         div, mod = divmod(len(values), per_page)
         self.max_page = div + (mod != 0)
+        self.row = row
 
     async def _message(self, *, edit_original: bool = False) -> Message:
         msg = await maybe_coroutine(
@@ -73,16 +76,16 @@ class Paginator(Generic[T]):
 
         disabled = self.max_page == 0
         control_items: tuple[Button, ...] = (
-            Button(emoji=FIRST_EMOJI, row=4, disabled=disabled, callback=self._go_to_first_page),
-            Button(emoji=PREVIOUS_EMOJI, row=4, disabled=disabled, callback=self._go_to_previous_page),
+            Button(emoji=FIRST_EMOJI, row=self.row, disabled=disabled, callback=self._go_to_first_page),
+            Button(emoji=PREVIOUS_EMOJI, row=self.row, disabled=disabled, callback=self._go_to_previous_page),
             Button(
                 label=f'{self.current_page + 1}/{self.max_page}' if self.max_page > 0 else '1',
-                row=4,
+                row=self.row,
                 disabled=disabled,
                 callback=self._go_to_page,
             ),
-            Button(emoji=NEXT_EMOJI, row=4, disabled=disabled, callback=self._go_to_next_page),
-            Button(emoji=LAST_EMOJI, row=4, disabled=disabled, callback=self._go_to_last_page),
+            Button(emoji=NEXT_EMOJI, row=self.row, disabled=disabled, callback=self._go_to_next_page),
+            Button(emoji=LAST_EMOJI, row=self.row, disabled=disabled, callback=self._go_to_last_page),
         )
 
         return msg._replace(items=items + control_items, edit_original=edit_original)
