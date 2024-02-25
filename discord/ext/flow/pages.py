@@ -47,7 +47,7 @@ class Paginator(Generic[T]):
     max_page: int
     current_page: int = 0
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 (allow too many arguments) I think, it's okay.
         self,
         message_builder: MaybeAwaitableFunc[[Sequence[T], int, int], Message],
         values: Sequence[T],
