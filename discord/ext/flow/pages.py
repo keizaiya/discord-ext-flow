@@ -32,7 +32,7 @@ class Paginator(Generic[T]):
     You should use `paginator` decorator and return this class instance.
 
     Args:
-        message_builder (MaybeAwaitableFunc[[Sequence[T], int, int], Message]):
+        message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int], Message]):
             generate message from separated values.
             Arguments are Separated values, current page number and max page number.
         values (Sequence[T]): values to paginate.
@@ -41,22 +41,22 @@ class Paginator(Generic[T]):
         row (int, optional): row number of control buttons. Defaults to 4.
     """
 
-    message_builder: MaybeAwaitableFunc[[Sequence[T], int, int], Message]
-    values: Sequence[T]
+    message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], Message]
+    values: tuple[T, ...]
     per_page: int
     max_page: int
     current_page: int = 0
 
     def __init__(  # noqa: PLR0913 (allow too many arguments) I think, it's okay.
         self,
-        message_builder: MaybeAwaitableFunc[[Sequence[T], int, int], Message],
+        message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], Message],
         values: Sequence[T],
         per_page: int = 10,
         start_page: int = 0,
         row: int = 4,
     ) -> None:
         self.message_builder = message_builder
-        self.values = values
+        self.values = tuple(values)
         self.current_page = start_page
         self.per_page = per_page
         div, mod = divmod(len(values), per_page)
