@@ -88,7 +88,7 @@ class Paginator(Generic[T]):
             Button(emoji=LAST_EMOJI, row=self.row, disabled=is_final_page, callback=self._go_to_last_page),
         )
 
-        return msg._replace(items=items + control_items, edit_original=edit_original)
+        return msg._replace(items=items + control_items, edit_original=edit_original or msg.edit_original)
 
     def _set_page_number(self, page_number: int) -> None:
         if 0 <= page_number < self.max_page:
