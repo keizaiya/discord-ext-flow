@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from os import getenv
 from random import randint
-from typing import TYPE_CHECKING
 
 from discord import Client, Embed, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Paginator, paginator
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+from discord.ext.flow import Button, Controller, Message, ModelBase, Paginator, Result, paginator
 
 
 class Pagination(ModelBase):
@@ -25,17 +21,17 @@ class Pagination(ModelBase):
     def message_builder(self, msgs: tuple[int, ...], current: int, max_page: int) -> Message:
         return Message(
             embeds=[Embed(title=f'{current}/{max_page}', description='\n'.join(str(i) for i in msgs))],
-            items=tuple(Button(label=f'{i}', callback=self.button_callback(i)) for i in msgs),
+            items=tuple(self.button_callback(i) for i in msgs),
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Callable[[Interaction[Client]], Awaitable[bool]]:
-        async def callback(interaction: Interaction[Client]) -> bool:
+    def button_callback(self, state: int) -> Button:
+        async def callback(interaction: Interaction[Client]) -> Result:
             print(state)
             await interaction.response.defer()
-            return False
+            return Result.finish_flow()
 
-        return callback
+        return Button(label=str(state), callback=callback)
 
 
 class MyClient(Client):

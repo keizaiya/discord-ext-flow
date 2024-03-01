@@ -1,29 +1,26 @@
 from __future__ import annotations
 
 from os import getenv
-from typing import TYPE_CHECKING
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
 from discord.ext.flow import Button, Controller, Message, ModelBase
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from discord.ext.flow.result import Result
 
 
 class StartModel(ModelBase):
     def message(self) -> Message:
         return Message(
             content='start!',
-            items=tuple(Button(label=f'{i+1}', callback=self.button_callback(i), row=1) for i in range(5)),
+            items=tuple(self.button(i) for i in range(5)),
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Callable[..., SecondModel]:
-        def button(_: Interaction[Client]) -> SecondModel:
-            return SecondModel((state,))
+    def button(self, state: int) -> Button:
+        def inner(_: Interaction[Client]) -> Result:
+            return Result.next_model(model=SecondModel((state,)))
 
-        return button
+        return Button(label=f'{state+1}', callback=inner, row=1)
 
 
 class SecondModel(ModelBase):
@@ -35,19 +32,19 @@ class SecondModel(ModelBase):
             content='second!',
             items=(
                 Button(label='back!', callback=self.back_button),
-                *tuple(Button(label=f'{i+1}', callback=self.button_callback(i), row=1) for i in range(5)),
+                *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> StartModel:
-        return StartModel()
+    def back_button(self, _: Interaction[Client]) -> Result:
+        return Result.next_model(model=StartModel())
 
-    def button_callback(self, state: int) -> Callable[..., ThirdModel]:
-        def button(_: Interaction[Client]) -> ThirdModel:
-            return ThirdModel((*self.status, state))
+    def button(self, state: int) -> Button:
+        def inner(_: Interaction[Client]) -> Result:
+            return Result.next_model(model=ThirdModel((*self.status, state)))
 
-        return button
+        return Button(label=f'{state+1}', callback=inner, row=1)
 
 
 class ThirdModel(ModelBase):
@@ -59,19 +56,19 @@ class ThirdModel(ModelBase):
             content='third!',
             items=(
                 Button(label='back!', callback=self.back_button),
-                *tuple(Button(label=f'{i+1}', callback=self.button_callback(i), row=1) for i in range(5)),
+                *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> SecondModel:
-        return SecondModel(self.status[:-1])
+    def back_button(self, _: Interaction[Client]) -> Result:
+        return Result.next_model(model=SecondModel(self.status[:-1]))
 
-    def button_callback(self, state: int) -> Callable[..., FourthModel]:
-        def button(_: Interaction[Client]) -> FourthModel:
-            return FourthModel((*self.status, state))
+    def button(self, state: int) -> Button:
+        def inner(_: Interaction[Client]) -> Result:
+            return Result.next_model(model=FourthModel((*self.status, state)))
 
-        return button
+        return Button(label=f'{state+1}', callback=inner, row=1)
 
 
 class FourthModel(ModelBase):
@@ -83,19 +80,19 @@ class FourthModel(ModelBase):
             content='fourth!',
             items=(
                 Button(label='back!', callback=self.back_button),
-                *tuple(Button(label=f'{i+1}', callback=self.button_callback(i), row=1) for i in range(5)),
+                *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> ThirdModel:
-        return ThirdModel(self.status[:-1])
+    def back_button(self, _: Interaction[Client]) -> Result:
+        return Result.next_model(model=ThirdModel(self.status[:-1]))
 
-    def button_callback(self, state: int) -> Callable[..., FinishModel]:
-        def button(_: Interaction[Client]) -> FinishModel:
-            return FinishModel((*self.status, state))
+    def button(self, state: int) -> Button:
+        def inner(_: Interaction[Client]) -> Result:
+            return Result.next_model(model=FinishModel((*self.status, state)))
 
-        return button
+        return Button(label=f'{state+1}', callback=inner, row=1)
 
 
 class FinishModel(ModelBase):

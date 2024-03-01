@@ -5,6 +5,7 @@ from os import getenv
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
 from discord.ext.flow import Button, Controller, Message, ModelBase
+from discord.ext.flow.result import Result
 
 TREE_STRING = """
 tree of this example
@@ -49,8 +50,8 @@ class Model(ModelBase):
         )
 
     def get_children(self, key: str) -> Button:
-        def children(_: Interaction[Client]) -> Model:
-            return Model(key)
+        def children(_: Interaction[Client]) -> Result:
+            return Result.next_model(model=Model(key))
 
         return Button(label=key, callback=children)
 
