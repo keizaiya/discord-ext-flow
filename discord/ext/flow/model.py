@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, NamedTuple
+
+from discord import ButtonStyle
+
 __all__ = (
     'Message',
     'Button',
@@ -12,10 +17,6 @@ __all__ = (
     'ModelBase',
 )
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple
-
-from discord import ButtonStyle
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
         tts: bool
         embeds: Sequence[Embed]
         files: Sequence[File]
+        delete_after: float
         allowed_mentions: AllowedMentions
         view: View
         suppress_embeds: bool
@@ -102,6 +104,8 @@ class Message(NamedTuple):
             d['embeds'] = self.embeds
         if self.files is not None:
             d['files'] = self.files
+        if self.delete_after is not None:
+            d['delete_after'] = self.delete_after
         if self.allowed_mentions is not None:
             d['allowed_mentions'] = self.allowed_mentions
         return d
