@@ -8,6 +8,7 @@ from .controller import *
 from .modal import *
 from .model import *
 from .pages import *
+from .result import *
 
 if TYPE_CHECKING:
     __all__ = (
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         'send_modal',
         'Paginator',
         'paginator',
+        'Result',
     )
 else:
-    __all__ = model.__all__ + controller.__all__ + modal.__all__ + pages.__all__
+    __all__ = model.__all__ + controller.__all__ + modal.__all__ + pages.__all__ + result.__all__

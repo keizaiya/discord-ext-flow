@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from discord.ui import View
     from discord.utils import MaybeAwaitable
 
+    from .result import Result
+
     __all__ += ('ViewConfig', 'ItemType')  # type: ignore[reportUnsupportedDunderAll, assignment]
 
     class ViewConfig(TypedDict, total=False):
@@ -48,19 +50,6 @@ if TYPE_CHECKING:
         """
 
         timeout: float | None
-
-    # if callback return
-    # type                             |
-    # ---------------------------------|-----------------------------------------------------------------
-    # None | True                      | Callback MUST consume interaction and lib wait next interaction.
-    # False                            | Callback MUST consume interaction and stop flow.
-    # ModelBase.items is set           | Send message and next flow.
-    # ModelBase.items is not set       | Send message and stop flow.
-    # Message                          | Send message and same model.
-    # ModelBase | Message, Interaction | same as before, but interaction is changed(MUST not consumed).
-    CallbackReturnType: TypeAlias = (
-        'ModelBase | Message | bool | None | tuple[ModelBase | Message |  bool | None, Interaction[Client]]'
-    )
 
     class MessageKwargs(TypedDict, total=False):
         content: str
@@ -126,7 +115,7 @@ class Button:
         - you should use Link instead of this if you want to send link.
     """
 
-    callback: Callable[[Interaction[Client]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client]], MaybeAwaitable[Result]]
     label: str | None = None
     custom_id: str | None = None
     disabled: bool = False
@@ -153,7 +142,7 @@ class Select:
         - options is keyword only argument.
     """
 
-    callback: Callable[[Interaction[Client], list[str]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[str]], MaybeAwaitable[Result]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -167,7 +156,7 @@ class Select:
 class UserSelect:
     """discord.ui.UserSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], list[User | Member]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[User | Member]], MaybeAwaitable[Result]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -182,7 +171,7 @@ class UserSelect:
 class RoleSelect:
     """discord.ui.RoleSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], list[Role]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[Role]], MaybeAwaitable[Result]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -197,7 +186,7 @@ class RoleSelect:
 class MentionableSelect:
     """discord.ui.MentionableSelect with callback for Message.items."""
 
-    callback: Callable[[Interaction[Client], list[User | Member | Role]], MaybeAwaitable[CallbackReturnType]]
+    callback: Callable[[Interaction[Client], list[User | Member | Role]], MaybeAwaitable[Result]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -212,9 +201,7 @@ class MentionableSelect:
 class ChannelSelect:
     """discord.ui.ChannelSelect with callback for Message.items."""
 
-    callback: Callable[
-        [Interaction[Client], list[AppCommandChannel | AppCommandThread]], MaybeAwaitable[CallbackReturnType]
-    ]
+    callback: Callable[[Interaction[Client], list[AppCommandChannel | AppCommandThread]], MaybeAwaitable[Result]]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1

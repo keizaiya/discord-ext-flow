@@ -5,13 +5,15 @@ from typing import TYPE_CHECKING
 from discord import Client, Interaction, ui
 from discord.utils import MISSING, maybe_coroutine
 
-from .model import Button, ChannelSelect, Link, MentionableSelect, Message, RoleSelect, Select, UserSelect
+from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
+from .result import _ResultTypeEnum
 from .util import unwrap_or
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from .model import CallbackReturnType, ItemType, ModelBase, ViewConfig
+    from .model import ItemType, ModelBase, ViewConfig
+    from .result import Result
 
 
 class _Button(ui.Button['_View']):
@@ -163,42 +165,36 @@ class _View(ui.View):
                 case ChannelSelect(_):
                     self.add_item(_ChannelSelect(item))
 
-    async def set_result(self, ret: CallbackReturnType, interaction: Interaction[Client]) -> None:
-        m: ModelBase | Message | bool | None
-        if isinstance(ret, tuple) and not isinstance(ret, Message):
-            m, interaction = ret
-        else:
-            m = ret
-
-        if (isinstance(m, bool) or m is None) and not interaction.response.is_done():
-            raise RuntimeError('Callback MUST consume interaction.')
-
-        if isinstance(m, bool):
-            if not m:
-                self.stop()
-            return
-
-        if m is None:
-            return
-
-        if isinstance(m, Message):
-            if m.edit_original:
+    async def set_result(self, result: Result, interaction: Interaction[Client]) -> None:
+        if result._interaction is not None:
+            interaction = result._interaction
+        match result._type:
+            case _ResultTypeEnum.MESSAGE:
+                assert result._message is not None
+                msg = result._message
                 self.clear_items()
-                self.set_items(m.items or ())
-                await interaction.response.edit_message(
-                    content=m.content,
-                    embeds=m.embeds or (),
-                    attachments=m.files or (),
-                    view=self,
-                    allowed_mentions=m.allowed_mentions,
-                    delete_after=m.delete_after,
-                )
-            else:
-                kwargs = m._to_dict()
-                kwargs['view'] = _View(config=self.config, items=m.items or ())
-                await interaction.response.send_message(**kwargs)
+                self.set_items(msg.items or ())
+                if msg.edit_original:
+                    await interaction.response.edit_message(
+                        content=msg.content,
+                        embeds=msg.embeds or (),
+                        attachments=msg.files or (),
+                        view=self,
+                        allowed_mentions=msg.allowed_mentions,
+                        delete_after=msg.delete_after,
+                    )
+                else:
+                    kwargs = msg._to_dict()
+                    kwargs['view'] = self
+                    await interaction.response.send_message(**kwargs)
+                if not msg.items:
+                    self.stop()
+            case _ResultTypeEnum.MODEL:
+                assert result._model is not None
+                self.result = (result._model, interaction)
                 self.stop()
-            return
-
-        self.result = (m, interaction)
-        self.stop()
+            case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
+                if not interaction.response.is_done():
+                    raise RuntimeError('Callback MUST consume interaction.')
+                if result._is_end:
+                    self.stop()

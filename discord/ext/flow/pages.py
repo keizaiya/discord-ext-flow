@@ -6,6 +6,7 @@ from discord.utils import maybe_coroutine
 
 from .modal import ModalConfig, TextInput, send_modal
 from .model import Button, Message
+from .result import Result
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -94,15 +95,15 @@ class Paginator(Generic[T]):
         if 0 <= page_number < self.max_page:
             self.current_page = page_number
 
-    async def _go_to_first_page(self, _: Interaction[Client]) -> Message:
+    async def _go_to_first_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(0)
-        return await self._message(edit_original=True)
+        return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_previous_page(self, _: Interaction[Client]) -> Message:
+    async def _go_to_previous_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(self.current_page - 1)
-        return await self._message(edit_original=True)
+        return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_page(self, interaction: Interaction[Client]) -> tuple[Message, Interaction[Client]]:
+    async def _go_to_page(self, interaction: Interaction[Client]) -> Result:
         texts, interaction = await send_modal(
             interaction,
             ModalConfig(title='Page Number'),
@@ -111,16 +112,15 @@ class Paginator(Generic[T]):
         assert len(texts) >= 1
         assert texts[0].isdigit()
         self._set_page_number(int(texts[0]) - 1)
-        msg = await self._message(edit_original=True)
-        return (msg, interaction)
+        return Result.send_message(message=await self._message(edit_original=True), interaction=interaction)
 
-    async def _go_to_next_page(self, _: Interaction[Client]) -> Message:
+    async def _go_to_next_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(self.current_page + 1)
-        return await self._message(edit_original=True)
+        return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_last_page(self, _: Interaction[Client]) -> Message:
+    async def _go_to_last_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(self.max_page - 1)
-        return await self._message(edit_original=True)
+        return Result.send_message(message=await self._message(edit_original=True))
 
 
 def paginator(func: MaybeAwaitableFunc[P, Paginator[Any]]) -> Callable[P, Awaitable[Message]]:

@@ -38,7 +38,8 @@ include = ["discord"]
 ignore = ["example"]
 
 reportGeneralTypeIssues = "warning"
-reportImportCycles = "warning"
+
+reportImportCycles = "none"
 
 useLibraryCodeForTypes = true
 deprecateTypingAliases = true
