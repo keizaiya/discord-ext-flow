@@ -10,10 +10,11 @@ from .view import _View
 if TYPE_CHECKING:
     from typing import Self
 
-    from discord import Client, Interaction, Message as Message_
+    from discord import Client, Interaction
     from discord.abc import Messageable
 
     from .model import Message, ModelBase
+    from .util import _Editable
 
 __all__ = ('Controller',)
 
@@ -40,7 +41,7 @@ class Controller:
         """
         return self.__class__(self.model)
 
-    async def invoke(self, messageable: Messageable | Interaction[Client], message: Message_ | None = None) -> None:
+    async def invoke(self, messageable: Messageable | Interaction[Client], message: _Editable | None = None) -> None:
         """Invoke flow.
 
         Args:
@@ -57,8 +58,8 @@ class Controller:
         self,
         model: ModelBase,
         messageable: Messageable | Interaction[Client],
-        edit_target: Message_ | None,
-    ) -> tuple[ModelBase, Interaction[Client], Message_] | None:
+        edit_target: _Editable | None,
+    ) -> tuple[ModelBase, Interaction[Client], _Editable] | None:
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
 
@@ -85,8 +86,8 @@ class Controller:
         messageable: Messageable | Interaction[Client],
         message: Message,
         view: _View | None,
-        edit_target: Message_ | None,
-    ) -> Message_:
+        edit_target: _Editable | None,
+    ) -> _Editable:
         kwargs = message._to_dict()
         if view is not None:
             kwargs['view'] = view

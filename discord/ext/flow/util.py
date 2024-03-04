@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
-from discord import Interaction
+from discord import Interaction, Message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import TypeVar, Unpack
+    from typing import Self, TypeVar, Unpack
 
-    from discord import AllowedMentions, Attachment, Client, Embed, File, Message
+    from discord import AllowedMentions, Attachment, Client, Embed, File
     from discord.abc import Messageable
     from discord.ui import View
 
@@ -23,6 +23,20 @@ def unwrap_or(value: T | None, default: U) -> T | U:
     if value is None:
         return default
     return value
+
+
+class _Editable(Protocol):
+    async def edit(  # noqa: PLR0913
+        self,
+        *,
+        content: str | None = None,
+        embeds: Sequence[Embed] | None = None,
+        attachments: Sequence[Attachment | File] | None = None,
+        view: View | None = None,
+        allowed_mentions: AllowedMentions | None = None,
+    ) -> Self:
+        """Message.edit, InteractionMessage.edit or WebhookMessage.edit."""
+        ...
 
 
 class _SendHelperKWType(TypedDict, total=False):
@@ -42,10 +56,10 @@ async def send_helper(
     delete_after: float | None = None,
     ephemeral: bool = False,
     **kwargs: Unpack[_SendHelperKWType],
-) -> Message:
+) -> _Editable:
     """Helper function to send message. use messageable or interaction."""
+    msg: Message
     if isinstance(messageable, Interaction):
-        msg: Message
         if messageable.response.is_done():
             msg = await messageable.followup.send(wait=True, ephemeral=ephemeral, **kwargs)
         else:
@@ -54,19 +68,17 @@ async def send_helper(
 
         if delete_after is not None:
             await msg.delete(delay=delete_after)
-
-        return msg
-
-    # type-ignore: can pass None to delete_after
-    return await messageable.send(delete_after=delete_after, **kwargs)  # type: ignore[reportArgumentType, arg-type]
+    else:
+        # type-ignore: can pass None to delete_after
+        msg = await messageable.send(delete_after=delete_after, **kwargs)  # type: ignore[reportArgumentType, arg-type]
+    # type-ignore: return type is Message, InteractionMessage or WebhookMessage, which are also _Editable
+    return msg  # type: ignore[reportReturnType, return-value]
 
 
 class _EditKWType(TypedDict, total=False):
     content: str
     embeds: Sequence[Embed]
     attachments: Sequence[Attachment | File]
-    suppress: bool
-    delete_after: float
     allowed_mentions: AllowedMentions
     view: View
 
@@ -80,10 +92,6 @@ def into_edit_kwargs(**kwargs: Unpack[MessageKwargs]) -> _EditKWType:
         kw['embeds'] = kwargs['embeds']
     if 'files' in kwargs:
         kw['attachments'] = kwargs['files']
-    if 'suppress_embeds' in kwargs:
-        kw['suppress'] = kwargs['suppress_embeds']
-    if 'delete_after' in kwargs:
-        kw['delete_after'] = kwargs['delete_after']
     if 'allowed_mentions' in kwargs:
         kw['allowed_mentions'] = kwargs['allowed_mentions']
     if 'view' in kwargs:
