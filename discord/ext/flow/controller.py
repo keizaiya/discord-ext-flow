@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from discord import Interaction
 from discord.utils import maybe_coroutine
 
 from .util import into_edit_kwargs, send_helper
@@ -10,7 +11,7 @@ from .view import _View
 if TYPE_CHECKING:
     from typing import Self
 
-    from discord import Client, Interaction
+    from discord import Client
     from discord.abc import Messageable
 
     from .model import Message, ModelBase
