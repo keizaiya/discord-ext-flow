@@ -95,8 +95,10 @@ class Controller:
 
         if message.edit_original:
             if isinstance(messageable, Interaction) and not messageable.response.is_done():
-                await messageable.response.edit_message(**into_edit_kwargs(**kwargs))
-                return await messageable.original_response()  # type: ignore[reportReturnType, return-value]
-            if edit_target is not None:
+                if messageable.message is not None:  # Interaction.message is not None -> can edit
+                    await messageable.response.edit_message(**into_edit_kwargs(**kwargs))
+                    return await messageable.original_response()  # type: ignore[reportReturnType, return-value]
+            elif edit_target is not None:
                 return await edit_target.edit(**into_edit_kwargs(**kwargs))
+            # fallback to send message
         return await send_helper(messageable, **kwargs)
