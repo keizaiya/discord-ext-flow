@@ -4,8 +4,7 @@ from os import getenv
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase
-from discord.ext.flow.result import Result
+from discord.ext.flow import Button, Controller, Message, ModelBase, Result
 
 TREE_STRING = """
 tree of this example
