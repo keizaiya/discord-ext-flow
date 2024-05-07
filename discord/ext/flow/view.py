@@ -69,8 +69,7 @@ class _UserSelect(ui.UserSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=config.default_values,
         )
         self.config = config
 
@@ -89,8 +88,7 @@ class _RoleSelect(ui.RoleSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=config.default_values,
         )
         self.config = config
 
@@ -109,8 +107,7 @@ class _MentionableSelect(ui.MentionableSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=config.default_values,
         )
         self.config = config
 
@@ -129,8 +126,7 @@ class _ChannelSelect(ui.ChannelSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=config.default_values,
         )
         self.config = config
 
