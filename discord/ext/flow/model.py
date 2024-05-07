@@ -167,8 +167,7 @@ class UserSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    # maybe implement in discord.py >= 2.4.0(unreleased)
-    # default_values: Sequence[Snowflake] | None = None # noqa: ERA001
+    default_values: Sequence[Snowflake] | None = None
 
 
 @dataclass
@@ -182,8 +181,7 @@ class RoleSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    # maybe implement in discord.py >= 2.4.0(unreleased)
-    # default_values: Sequence[Snowflake] | None = None # noqa: ERA001
+    default_values: Sequence[Snowflake] | None = None
 
 
 @dataclass
@@ -197,8 +195,7 @@ class MentionableSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    # maybe implement in discord.py >= 2.4.0(unreleased)
-    # default_values: Sequence[Snowflake] | None = None # noqa: ERA001
+    default_values: Sequence[Snowflake] | None = None
 
 
 @dataclass
@@ -213,8 +210,7 @@ class ChannelSelect:
     disabled: bool = False
     row: int | None = None
     channel_types: Sequence[ChannelType] | None = field(default=None, kw_only=True)
-    # maybe implement in discord.py >= 2.4.0(unreleased)
-    # default_values: Sequence[Snowflake] | None = None # noqa: ERA001
+    default_values: Sequence[Snowflake] | None = None
 
 
 if TYPE_CHECKING:
