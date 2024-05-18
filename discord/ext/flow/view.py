@@ -7,7 +7,7 @@ from discord.utils import MISSING, maybe_coroutine
 
 from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
 from .result import _ResultTypeEnum
-from .util import unwrap_or
+from .util import send_helper, unwrap_or
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -174,19 +174,7 @@ class _View(ui.View):
                 msg = result._message
                 self.clear_items()
                 self.set_items(msg.items or ())
-                if msg.edit_original:
-                    await interaction.response.edit_message(
-                        content=msg.content,
-                        embeds=msg.embeds or (),
-                        attachments=msg.files or (),
-                        view=self,
-                        allowed_mentions=msg.allowed_mentions,
-                        delete_after=msg.delete_after,
-                    )
-                else:
-                    kwargs = msg._to_dict()
-                    kwargs['view'] = self
-                    await interaction.response.send_message(**kwargs)
+                await send_helper(interaction, msg, self, None)
                 if not msg.items:
                     self.stop()
             case _ResultTypeEnum.MODEL:
