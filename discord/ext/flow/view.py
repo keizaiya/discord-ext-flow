@@ -7,7 +7,7 @@ from discord.utils import MISSING, maybe_coroutine
 
 from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
 from .result import _ResultTypeEnum
-from .util import send_helper, unwrap_or
+from .util import map_or, send_helper, unwrap_or
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -48,7 +48,7 @@ class _Select(ui.Select['_View']):
             placeholder=config.placeholder,
             min_values=config.min_values,
             max_values=config.max_values,
-            options=list(config.options),
+            options=map_or(config.options, MISSING, list),
             disabled=config.disabled,
             row=config.row,
         )
@@ -69,8 +69,7 @@ class _UserSelect(ui.UserSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=unwrap_or(config.default_values, MISSING),
         )
         self.config = config
 
@@ -89,8 +88,7 @@ class _RoleSelect(ui.RoleSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=unwrap_or(config.default_values, MISSING),
         )
         self.config = config
 
@@ -109,8 +107,7 @@ class _MentionableSelect(ui.MentionableSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=unwrap_or(config.default_values, MISSING),
         )
         self.config = config
 
@@ -129,8 +126,7 @@ class _ChannelSelect(ui.ChannelSelect['_View']):
             max_values=config.max_values,
             disabled=config.disabled,
             row=config.row,
-            # maybe implement in discord.py >= 2.4.0(unreleased)
-            # default_values=config.default_values, # noqa: ERA001
+            default_values=unwrap_or(config.default_values, MISSING),
         )
         self.config = config
 
