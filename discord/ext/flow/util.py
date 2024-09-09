@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Protocol, TypedDict
 from discord import Interaction, Message
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from typing import Self, TypeVar, Unpack
 
     from discord import AllowedMentions, Attachment, Client, Embed, File
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     T = TypeVar('T')
     U = TypeVar('U')
+    V = TypeVar('V')
 
 
 def unwrap_or(value: T | None, default: U) -> T | U:
@@ -25,8 +26,15 @@ def unwrap_or(value: T | None, default: U) -> T | U:
     return value
 
 
+def map_or(value: T | None, default: U, func: Callable[[T], V]) -> V | U:
+    """Return func(value) if value is not None, otherwise return default."""
+    if value is None:
+        return default
+    return func(value)
+
+
 class _Editable(Protocol):
-    async def edit(  # noqa: PLR0913
+    async def edit(
         self,
         *,
         content: str | None = None,

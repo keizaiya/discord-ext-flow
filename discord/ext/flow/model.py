@@ -26,16 +26,21 @@ if TYPE_CHECKING:
         AllowedMentions,
         ChannelType,
         Client,
+        ClientUser,
         Embed,
         Emoji,
         File,
         Interaction,
         Member,
+        Object,
         PartialEmoji,
         Role,
+        SelectDefaultValue,
         SelectOption,
+        Thread,
         User,
     )
+    from discord.abc import GuildChannel
     from discord.app_commands import AppCommandChannel, AppCommandThread
     from discord.ui import View
     from discord.utils import MaybeAwaitable
@@ -63,6 +68,20 @@ if TYPE_CHECKING:
         suppress_embeds: bool
         ephemeral: bool
         silent: bool
+
+    # copied from discord.ui.select
+    ValidDefaultValues = (
+        SelectDefaultValue
+        | Object
+        | Role
+        | Member
+        | ClientUser
+        | User
+        | GuildChannel
+        | AppCommandChannel
+        | AppCommandThread
+        | Thread
+    )
 
 
 class Message(NamedTuple):
@@ -153,7 +172,7 @@ class Select:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    options: Sequence[SelectOption] = field(kw_only=True)
+    options: Sequence[SelectOption] | None = None
 
 
 @dataclass
@@ -167,7 +186,7 @@ class UserSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    default_values: Sequence[Snowflake] | None = None
+    default_values: Sequence[ValidDefaultValues] | None = None
 
 
 @dataclass
@@ -181,7 +200,7 @@ class RoleSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    default_values: Sequence[Snowflake] | None = None
+    default_values: Sequence[ValidDefaultValues] | None = None
 
 
 @dataclass
@@ -195,7 +214,7 @@ class MentionableSelect:
     max_values: int = 1
     disabled: bool = False
     row: int | None = None
-    default_values: Sequence[Snowflake] | None = None
+    default_values: Sequence[ValidDefaultValues] | None = None
 
 
 @dataclass
@@ -210,7 +229,7 @@ class ChannelSelect:
     disabled: bool = False
     row: int | None = None
     channel_types: Sequence[ChannelType] | None = field(default=None, kw_only=True)
-    default_values: Sequence[Snowflake] | None = None
+    default_values: Sequence[ValidDefaultValues] | None = None
 
 
 if TYPE_CHECKING:
