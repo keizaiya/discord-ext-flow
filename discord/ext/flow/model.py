@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         Member,
         Object,
         PartialEmoji,
+        Poll,
         Role,
         SelectDefaultValue,
         SelectOption,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
         suppress_embeds: bool
         ephemeral: bool
         silent: bool
+        poll: Poll
 
     # copied from discord.ui.select
     ValidDefaultValues = (
@@ -106,6 +108,7 @@ class Message(NamedTuple):
     suppress_embeds: bool = False
     ephemeral: bool = False
     silent: bool = False
+    poll: Poll | None = None
 
     edit_original: bool = False
     disable_items: bool = False
@@ -127,6 +130,8 @@ class Message(NamedTuple):
             d['delete_after'] = self.delete_after
         if self.allowed_mentions is not None:
             d['allowed_mentions'] = self.allowed_mentions
+        if self.poll is not None:
+            d['poll'] = self.poll
         return d
 
 
