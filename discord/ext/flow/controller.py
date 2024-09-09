@@ -2,19 +2,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from discord import Interaction
 from discord.utils import maybe_coroutine
 
-from .util import into_edit_kwargs, send_helper
+from .util import send_helper
 from .view import _View
 
 if TYPE_CHECKING:
     from typing import Self
 
-    from discord import Client
+    from discord import Client, Interaction
     from discord.abc import Messageable
 
-    from .model import Message, ModelBase
+    from .model import ModelBase
     from .util import _Editable
 
 __all__ = ('Controller',)
@@ -65,12 +64,12 @@ class Controller:
         msg = await maybe_coroutine(model.message)
 
         if msg.items is None:
-            await self._send_helper(messageable, msg, None, edit_target)
+            await send_helper(messageable, msg, None, edit_target)
             await maybe_coroutine(model.after_invoke)
             return None
 
         view = _View(await maybe_coroutine(model.view_config), msg.items)
-        message = await self._send_helper(messageable, msg, view, edit_target)
+        message = await send_helper(messageable, msg, view, edit_target)
 
         await view.wait()
         if msg.disable_items:
@@ -81,24 +80,3 @@ class Controller:
         await maybe_coroutine(model.after_invoke)
 
         return None if view.result is None else (*view.result, message)
-
-    async def _send_helper(
-        self,
-        messageable: Messageable | Interaction[Client],
-        message: Message,
-        view: _View | None,
-        edit_target: _Editable | None,
-    ) -> _Editable:
-        kwargs = message._to_dict()
-        if view is not None:
-            kwargs['view'] = view
-
-        if message.edit_original:
-            if isinstance(messageable, Interaction) and not messageable.response.is_done():
-                if messageable.message is not None:  # Interaction.message is not None -> can edit
-                    await messageable.response.edit_message(**into_edit_kwargs(**kwargs))
-                    return await messageable.original_response()  # type: ignore[reportReturnType, return-value]
-            elif edit_target is not None:
-                return await edit_target.edit(**into_edit_kwargs(**kwargs))
-            # fallback to send message
-        return await send_helper(messageable, **kwargs)
