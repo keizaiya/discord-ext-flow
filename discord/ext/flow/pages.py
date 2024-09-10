@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from discord.utils import maybe_coroutine
 
-from .modal import ModalConfig, TextInput, send_modal
-from .model import Button, Message
-from .result import Result
+from .modal import ModalConfig, ModalController, TextInput
+from .model import Button, ItemType, Message
+from .result import Result, _ResultTypeEnum
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -63,6 +63,10 @@ class Paginator(Generic[T]):
         div, mod = divmod(len(values), per_page)
         self.max_page = div + (mod != 0)
         self.row = row
+        self.modal_controller = ModalController(
+            ModalConfig(title='Page Number'),
+            (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
+        )
 
     async def _message(self, *, edit_original: bool = False) -> Message:
         msg = await maybe_coroutine(
@@ -71,7 +75,13 @@ class Paginator(Generic[T]):
             self.current_page,
             self.max_page,
         )
-        items = () if msg.items is None else tuple(msg.items)
+        items: list[ItemType] = []
+        if msg.items is not None:
+            for item in msg.items:
+                if hasattr(item, 'callback'):
+                    # type safe, because we are sure that item has callback attribute and this is not change type hint.
+                    item.callback = self._finalize_modal(item.callback)  # type: ignore[reportUnknownMemberType, reportArgumentType, reportAttributeAccessIssue]
+                items.append(item)
         if len(items) > 20:
             raise ValueError('Message.items must be less than 20')
 
@@ -89,7 +99,25 @@ class Paginator(Generic[T]):
             Button(emoji=LAST_EMOJI, row=self.row, disabled=is_final_page, callback=self._go_to_last_page),
         )
 
-        return msg._replace(items=items + control_items, edit_original=edit_original or msg.edit_original)
+        return msg._replace(items=tuple(items) + control_items, edit_original=edit_original or msg.edit_original)
+
+    def _finalize_modal(self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
+        async def finalize(*args: P.args, **kwargs: P.kwargs) -> Result:
+            result = await maybe_coroutine(callback, *args, **kwargs)
+            if (
+                (
+                    result._type in (_ResultTypeEnum.MODEL, _ResultTypeEnum.FINISH)
+                ) or (
+                    result._type == _ResultTypeEnum.MESSAGE
+                    and result._message is not None
+                    and (not result._message.items or result._message.disable_items)
+                )
+            ):  # fmt: skip
+                # it is stop view and pagination is finished. so, we can stop all modals.
+                self.modal_controller.stop()
+            return result
+
+        return finalize
 
     def _set_page_number(self, page_number: int) -> None:
         if 0 <= page_number < self.max_page:
@@ -104,15 +132,11 @@ class Paginator(Generic[T]):
         return Result.send_message(message=await self._message(edit_original=True))
 
     async def _go_to_page(self, interaction: Interaction[Client]) -> Result:
-        texts, interaction = await send_modal(
-            interaction,
-            ModalConfig(title='Page Number'),
-            (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
-        )
-        assert len(texts) >= 1
-        assert texts[0].isdigit()
-        self._set_page_number(int(texts[0]) - 1)
-        return Result.send_message(message=await self._message(edit_original=True), interaction=interaction)
+        result = await self.modal_controller.send_modal(interaction)
+        assert len(result.texts) >= 1
+        assert result.texts[0].isdigit()
+        self._set_page_number(int(result.texts[0]) - 1)
+        return Result.send_message(message=await self._message(edit_original=True), interaction=result.interaction)
 
     async def _go_to_next_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(self.current_page + 1)

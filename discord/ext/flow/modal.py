@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from asyncio import Future, Task, get_running_loop
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 from discord import Client, Interaction, TextStyle, ui
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ('TextInput', 'ModalConfig', 'send_modal')
+
+__all__ = ('TextInput', 'ModalConfig', 'ModalResult', 'ModalController')
 
 
 @dataclass
@@ -53,9 +55,15 @@ class ModalConfigKWargs(TypedDict, total=False):
     custom_id: str
 
 
-class InnerModal(ui.Modal):
-    results: tuple[str, ...]
+class ModalResult(NamedTuple):
+    """Result of modal. length of texts is same as length of text_inputs in ModalConfig."""
+
+    texts: tuple[str, ...]
     interaction: Interaction[Client]
+
+
+class InnerModal(ui.Modal):
+    result: ModalResult
 
     def __init__(self, config: ModalConfig, text_inputs: Sequence[TextInput]) -> None:
         kwargs: ModalConfigKWargs = {'title': config.title, 'timeout': config.timeout}
@@ -82,25 +90,82 @@ class InnerModal(ui.Modal):
         for child in self.children:
             assert isinstance(child, ui.TextInput)
             results.append(child.value)
-        self.results = tuple(results)
-        self.interaction = interaction
+        self.result = ModalResult(tuple(results), interaction)
         self.stop()
 
 
-async def send_modal(
-    interaction: Interaction[Client], config: ModalConfig, text_inputs: Sequence[TextInput]
-) -> tuple[tuple[str, ...], Interaction[Client]]:
-    """Text input modal.
+class ModalController:
+    """Modal controller.
+
+    you should...
+    - construct this class and save it to Model.
 
     Args:
-        interaction (Interaction): Interaction to send modal. This interaction will be consumed.
         config (ModalConfig): config for modal.
         text_inputs (Sequence[TextInput]): text inputs for modal.
-
-    Returns:
-        tuple[tuple[str, ...], Interaction]: results and interaction. results length is same as text_inputs length.
     """
-    inner_modal = InnerModal(config, text_inputs)
-    await interaction.response.send_modal(inner_modal)
-    await inner_modal.wait()
-    return inner_modal.results, inner_modal.interaction
+
+    def __init__(self, config: ModalConfig, text_inputs: Sequence[TextInput]) -> None:
+        self.__stopped: Future[bool] = get_running_loop().create_future()
+        self.config = config
+        self.text_inputs = text_inputs
+        self.modals: list[tuple[InnerModal, Task[None]]] = []
+
+    async def _wait_modal(self, modal: InnerModal, result_future: Future[ModalResult]) -> None:
+        await modal.wait()
+
+        if self.__stopped.done():
+            result_future.cancel()
+            return
+
+        self.__stopped.set_result(True)
+        result_future.set_result(modal.result)
+        self.__inner_cancel()
+
+    def stop(self) -> None:
+        """Stop all modals. You should call this method in Model.after_invoke method."""
+        self.__stopped.set_result(False)
+        self.__inner_cancel()
+
+    def __inner_cancel(self) -> None:
+        for m, t in self.modals:
+            m.stop()
+            t.cancel()
+
+    def is_finished(self) -> bool:
+        """This modal controller is finished or not.
+
+        Returns:
+            bool: True if finished.
+        """
+        return self.__stopped.done()
+
+    async def wait(self) -> bool:
+        """Wait until all modals are finished.
+
+        Returns:
+            bool: False if call stop method.
+        """
+        return await self.__stopped
+
+    async def send_modal(self, interaction: Interaction) -> ModalResult:
+        """Send modal. call this method in any view item callback.
+
+        Args:
+            interaction (Interaction): interaction to send modal.
+
+        Returns:
+            ModalResult: result of modal.
+
+        Exceptions:
+            asyncio.CancelledError:
+                if call stop method, receive value from user interaction in other model or any other reason,
+                raise this error. if you want catch this error and call this in flow's callback,
+                you should raise any Error. not return Result.
+        """
+        result_future: Future[ModalResult] = get_running_loop().create_future()
+        modal = InnerModal(self.config, self.text_inputs)
+        await interaction.response.send_modal(modal)
+        task = get_running_loop().create_task(self._wait_modal(modal, result_future))
+        self.modals.append((modal, task))
+        return await result_future
