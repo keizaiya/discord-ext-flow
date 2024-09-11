@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from discord.utils import maybe_coroutine
 
 from .modal import ModalConfig, ModalController, TextInput
-from .model import Button, ItemType, Message
+from .model import Button, Message
 from .result import Result, _ResultTypeEnum
 
 if TYPE_CHECKING:
@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
     from discord import Client, Interaction
     from discord.utils import MaybeAwaitableFunc
+
+    from .model import ItemType
 
     P = ParamSpec('P')
 
@@ -63,10 +65,7 @@ class Paginator(Generic[T]):
         div, mod = divmod(len(values), per_page)
         self.max_page = div + (mod != 0)
         self.row = row
-        self.modal_controller = ModalController(
-            ModalConfig(title='Page Number'),
-            (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
-        )
+        self.modal_controller = ModalController()
 
     async def _message(self, *, edit_original: bool = False) -> Message:
         msg = await maybe_coroutine(
@@ -132,7 +131,11 @@ class Paginator(Generic[T]):
         return Result.send_message(message=await self._message(edit_original=True))
 
     async def _go_to_page(self, interaction: Interaction[Client]) -> Result:
-        result = await self.modal_controller.send_modal(interaction)
+        result = await self.modal_controller.send_modal(
+            interaction,
+            ModalConfig(title='Page Number'),
+            (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
+        )
         assert len(result.texts) >= 1
         assert result.texts[0].isdigit()
         self._set_page_number(int(result.texts[0]) - 1)

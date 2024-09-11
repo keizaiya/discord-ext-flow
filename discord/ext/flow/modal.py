@@ -99,16 +99,10 @@ class ModalController:
 
     you should...
     - construct this class and save it to Model.
-
-    Args:
-        config (ModalConfig): config for modal.
-        text_inputs (Sequence[TextInput]): text inputs for modal.
     """
 
-    def __init__(self, config: ModalConfig, text_inputs: Sequence[TextInput]) -> None:
+    def __init__(self) -> None:
         self.__stopped: Future[bool] = get_running_loop().create_future()
-        self.config = config
-        self.text_inputs = text_inputs
         self.modals: list[tuple[InnerModal, Task[None]]] = []
 
     async def _wait_modal(self, modal: InnerModal, result_future: Future[ModalResult]) -> None:
@@ -124,6 +118,8 @@ class ModalController:
 
     def stop(self) -> None:
         """Stop all modals. You should call this method in Model.after_invoke method."""
+        if self.__stopped.done():
+            return
         self.__stopped.set_result(False)
         self.__inner_cancel()
 
@@ -148,11 +144,18 @@ class ModalController:
         """
         return await self.__stopped
 
-    async def send_modal(self, interaction: Interaction) -> ModalResult:
+    async def send_modal(
+        self,
+        interaction: Interaction,
+        config: ModalConfig,
+        text_inputs: Sequence[TextInput],
+    ) -> ModalResult:
         """Send modal. call this method in any view item callback.
 
         Args:
             interaction (Interaction): interaction to send modal.
+            config (ModalConfig): config for modal.
+            text_inputs (Sequence[TextInput]): text inputs for modal.
 
         Returns:
             ModalResult: result of modal.
@@ -164,7 +167,7 @@ class ModalController:
                 you should raise any Error. not return Result.
         """
         result_future: Future[ModalResult] = get_running_loop().create_future()
-        modal = InnerModal(self.config, self.text_inputs)
+        modal = InnerModal(config, text_inputs)
         await interaction.response.send_modal(modal)
         task = get_running_loop().create_task(self._wait_modal(modal, result_future))
         self.modals.append((modal, task))
