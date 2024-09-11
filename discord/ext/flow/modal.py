@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-__all__ = ('TextInput', 'ModalConfig', 'ModalResult', 'ModalController')
+__all__ = ('TextInput', 'ModalConfig', 'ModalResult', 'ModalController', 'send_modal')
 
 
 @dataclass
@@ -92,6 +92,25 @@ class InnerModal(ui.Modal):
             results.append(child.value)
         self.result = ModalResult(tuple(results), interaction)
         self.stop()
+
+
+async def send_modal(
+    interaction: Interaction[Client], config: ModalConfig, text_inputs: Sequence[TextInput]
+) -> ModalResult:
+    """Text input modal.
+
+    Args:
+        interaction (Interaction): Interaction to send modal. This interaction will be consumed.
+        config (ModalConfig): config for modal.
+        text_inputs (Sequence[TextInput]): text inputs for modal.
+
+    Returns:
+        ModalResult: Result of modal. length of .texts is same as length of text_inputs in ModalConfig.
+    """
+    inner_modal = InnerModal(config, text_inputs)
+    await interaction.response.send_modal(inner_modal)
+    await inner_modal.wait()
+    return inner_modal.result
 
 
 class ModalController:

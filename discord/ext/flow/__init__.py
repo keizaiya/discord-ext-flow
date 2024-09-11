@@ -23,6 +23,7 @@ __all__ = (
     'ModalConfig',
     'ModalResult',
     'ModalController',
+    'send_modal',
     'Paginator',
     'paginator',
     'Result',
