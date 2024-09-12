@@ -19,7 +19,7 @@ __all__ = (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Sequence
     from typing import Any, TypeAlias, TypedDict
 
     from discord import (
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from discord.abc import GuildChannel
     from discord.app_commands import AppCommandChannel, AppCommandThread
     from discord.ui import View
-    from discord.utils import MaybeAwaitable
+    from discord.utils import MaybeAwaitable, MaybeAwaitableFunc
 
     from .result import Result
 
@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     )
     T = TypeVar('T')
     P = ParamSpec('P')
-    MaybeAwaitableFunc = Callable[P, T] | Callable[P, Awaitable[T]]
 
 
 class Message(NamedTuple):
