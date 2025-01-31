@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
     from .result import Result
 
-    __all__ += ('ItemType', 'ViewConfig')  # type: ignore[reportUnsupportedDunderAll, assignment]
+    __all__ += ('ItemType', 'ValidDefaultValues', 'ViewConfig')  # type: ignore[reportUnsupportedDunderAll, assignment]
 
     class ViewConfig(TypedDict, total=False):
         """Config for View.

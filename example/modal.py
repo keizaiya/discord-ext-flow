@@ -26,34 +26,46 @@ class EmbedModel(ModelBase):
         )
 
     def edit_title_button(self) -> Button:
+        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+            self.embed.title = texts[0]
+            return Result.send_message(message=self.message(), interaction=interaction)
+
         async def inner(interaction: Interaction[Client]) -> Result:
-            result = await send_modal(
+            await send_modal(
+                callback,
                 interaction,
                 ModalConfig(title='Edit Title'),
                 (TextInput(label='title', default=self.embed.title),),
             )
-            assert len(result.texts) >= 1
-            self.embed.title = result.texts[0]
-            return Result.send_message(message=self.message(), interaction=result.interaction)
+            return Result.continue_flow()
 
         return Button(label='edit title', callback=inner)
 
     def edit_description_button(self) -> Button:
+        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+            self.embed.description = texts[0]
+            return Result.send_message(message=self.message(), interaction=interaction)
+
         async def inner(interaction: Interaction[Client]) -> Result:
-            result = await send_modal(
+            await send_modal(
+                callback,
                 interaction,
                 ModalConfig(title='Edit Description'),
                 (TextInput(label='description', default=self.embed.description),),
             )
-            assert len(result.texts) >= 1
-            self.embed.description = result.texts[0]
-            return Result.send_message(message=self.message(), interaction=result.interaction)
+            return Result.continue_flow()
 
         return Button(label='edit description', callback=inner)
 
     def edit_title_and_description_button(self) -> Button:
+        async def callback(interaction: Interaction[Client], texts: tuple[str, str]) -> Result:
+            self.embed.title = texts[0]
+            self.embed.description = texts[1]
+            return Result.send_message(message=self.message(), interaction=interaction)
+
         async def inner(interaction: Interaction[Client]) -> Result:
-            result = await send_modal(
+            await send_modal(
+                callback,
                 interaction,
                 ModalConfig(title='Edit Title and Description'),
                 (
@@ -61,10 +73,7 @@ class EmbedModel(ModelBase):
                     TextInput(label='description', default=self.embed.description),
                 ),
             )
-            assert len(result.texts) >= 2
-            self.embed.title = result.texts[0]
-            self.embed.description = result.texts[1]
-            return Result.send_message(message=self.message(), interaction=result.interaction)
+            return Result.continue_flow()
 
         return Button(label='edit title and description', callback=inner)
 

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from discord.utils import maybe_coroutine
 
-from .modal import ModalConfig, ModalController, TextInput
+from .modal import ModalConfig, TextInput, send_modal
 from .model import Button, Message
 from .result import Result, _ResultTypeEnum
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from discord import Client, Interaction
     from discord.utils import MaybeAwaitableFunc
 
+    from .external_task import ExternalResultTask
     from .model import ItemType
 
     P = ParamSpec('P')
@@ -49,6 +50,7 @@ class Paginator(Generic[T]):
     per_page: int
     max_page: int
     current_page: int = 0
+    modal_tasks: list[ExternalResultTask]
 
     def __init__(
         self,
@@ -65,7 +67,7 @@ class Paginator(Generic[T]):
         div, mod = divmod(len(values), per_page)
         self.max_page = div + (mod != 0)
         self.row = row
-        self.modal_controller = ModalController()
+        self.modal_tasks = []
 
     async def _message(self, *, edit_original: bool = False) -> Message:
         msg = await maybe_coroutine(
@@ -113,7 +115,8 @@ class Paginator(Generic[T]):
                 )
             ):  # fmt: skip
                 # it is stop view and pagination is finished. so, we can stop all modals.
-                self.modal_controller.stop()
+                for task in self.modal_tasks:
+                    task.cancel()
             return result
 
         return finalize
@@ -131,15 +134,22 @@ class Paginator(Generic[T]):
         return Result.send_message(message=await self._message(edit_original=True))
 
     async def _go_to_page(self, interaction: Interaction[Client]) -> Result:
-        result = await self.modal_controller.send_modal(
+        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+            assert len(texts) >= 1
+            assert texts[0].isdigit()
+            self._set_page_number(int(texts[0]) - 1)
+            return Result.send_message(message=await self._message(edit_original=True), interaction=interaction)
+
+        task = await send_modal(
+            callback,
             interaction,
             ModalConfig(title='Page Number'),
             (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
         )
-        assert len(result.texts) >= 1
-        assert result.texts[0].isdigit()
-        self._set_page_number(int(result.texts[0]) - 1)
-        return Result.send_message(message=await self._message(edit_original=True), interaction=result.interaction)
+        self.modal_tasks.append(task)
+        self.modal_tasks[:] = [t for t in self.modal_tasks if not t.done()]
+
+        return Result.continue_flow()
 
     async def _go_to_next_page(self, _: Interaction[Client]) -> Result:
         self._set_page_number(self.current_page + 1)
