@@ -35,6 +35,8 @@ def map_or(value: T | None, default: U, func: Callable[[T], V]) -> V | U:
 
 
 class _Editable(Protocol):
+    channel: Messageable
+
     async def edit(
         self,
         *,

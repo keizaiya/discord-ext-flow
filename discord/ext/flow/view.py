@@ -14,6 +14,8 @@ from .util import map_or, send_helper, unwrap_or
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from discord.abc import Messageable
+
     from .model import ItemType, ModelBase, ViewConfig
     from .result import Result
 
@@ -153,7 +155,7 @@ class _ChannelSelect(ui.ChannelSelect['_View']):
 
 
 class _View(ui.View):
-    result: tuple[ModelBase, Interaction[Client]] | None = None
+    result: tuple[ModelBase, Interaction[Client] | Messageable] | None = None
     config: ViewConfig
 
     def __init__(self, config: ViewConfig, items: Sequence[ItemType]) -> None:
@@ -179,24 +181,24 @@ class _View(ui.View):
                 case ChannelSelect(_):
                     self.add_item(_ChannelSelect(item))
 
-    async def set_result(self, result: Result, interaction: Interaction[Client]) -> None:
+    async def set_result(self, result: Result, messageable: Interaction[Client] | Messageable) -> None:
         if result._interaction is not None:
-            interaction = result._interaction
+            messageable = result._interaction
         match result._type:
             case _ResultTypeEnum.MESSAGE:
                 assert result._message is not None
                 msg = result._message
                 self.clear_items()
                 self.set_items(msg.items or ())
-                await send_helper(interaction, msg, self, None)
+                await send_helper(messageable, msg, self, None)
                 if not msg.items:
                     self.stop()
             case _ResultTypeEnum.MODEL:
                 assert result._model is not None
-                self.result = (result._model, interaction)
+                self.result = (result._model, messageable)
                 self.stop()
             case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
-                if not interaction.response.is_done():
+                if isinstance(messageable, Interaction) and not messageable.response.is_done():
                     raise RuntimeError('Callback MUST consume interaction.')
                 if result._is_end:
                     self.stop()

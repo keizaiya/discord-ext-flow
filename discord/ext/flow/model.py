@@ -6,15 +6,15 @@ from typing import TYPE_CHECKING, NamedTuple, ParamSpec, TypeVar
 from discord import ButtonStyle
 
 __all__ = (
-    'Message',
     'Button',
+    'ChannelSelect',
     'Link',
+    'MentionableSelect',
+    'Message',
+    'ModelBase',
+    'RoleSelect',
     'Select',
     'UserSelect',
-    'RoleSelect',
-    'MentionableSelect',
-    'ChannelSelect',
-    'ModelBase',
 )
 
 
@@ -46,9 +46,10 @@ if TYPE_CHECKING:
     from discord.ui import View
     from discord.utils import MaybeAwaitable, MaybeAwaitableFunc
 
+    from .external_event import ExternalEvent
     from .result import Result
 
-    __all__ += ('ViewConfig', 'ItemType')  # type: ignore[reportUnsupportedDunderAll, assignment]
+    __all__ += ('ItemType', 'ViewConfig')  # type: ignore[reportUnsupportedDunderAll, assignment]
 
     class ViewConfig(TypedDict, total=False):
         """Config for View.
@@ -114,6 +115,7 @@ class Message(NamedTuple):
 
     edit_original: bool = False
     disable_items: bool = False
+    external_result: ExternalEvent | None = None
 
     def _to_dict(self) -> MessageKwargs:
         d: MessageKwargs = {

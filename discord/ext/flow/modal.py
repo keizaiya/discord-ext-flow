@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-__all__ = ('TextInput', 'ModalConfig', 'ModalResult', 'ModalController', 'send_modal')
+__all__ = ('ModalConfig', 'ModalController', 'ModalResult', 'TextInput', 'send_modal')
 
 
 @dataclass

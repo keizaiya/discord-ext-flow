@@ -8,6 +8,7 @@ from .util import send_helper
 from .view import _View
 
 if TYPE_CHECKING:
+    from asyncio import Task
     from typing import Self
 
     from discord import Client, Interaction
@@ -15,7 +16,6 @@ if TYPE_CHECKING:
 
     from .model import ModelBase
     from .util import _Editable
-
 __all__ = ('Controller',)
 
 
@@ -59,7 +59,8 @@ class Controller:
         model: ModelBase,
         messageable: Messageable | Interaction[Client],
         edit_target: _Editable | None,
-    ) -> tuple[ModelBase, Interaction[Client], _Editable] | None:
+    ) -> tuple[ModelBase, Interaction[Client] | Messageable, _Editable] | None:
+        tasks: list[Task[None]] = []
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
 
@@ -71,6 +72,9 @@ class Controller:
         view = _View(await maybe_coroutine(model.view_config), msg.items)
         message = await send_helper(messageable, msg, view, edit_target)
 
+        if msg.external_result is not None:
+            tasks.extend(msg.external_result._wait_result(view, message.channel))
+
         await view.wait()
         if msg.disable_items:
             for child in view.children:
@@ -78,5 +82,7 @@ class Controller:
             await message.edit(view=view)
 
         await maybe_coroutine(model.after_invoke)
+        for task in tasks:
+            task.cancel()
 
         return None if view.result is None else (*view.result, message)
