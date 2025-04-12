@@ -19,7 +19,7 @@ class StartModel(ModelBase):
         def inner(_: Interaction[Client]) -> Result:
             return Result.next_model(model=SecondModel((state,)))
 
-        return Button(label=f'{state+1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', callback=inner, row=1)
 
 
 class SecondModel(ModelBase):
@@ -43,7 +43,7 @@ class SecondModel(ModelBase):
         def inner(_: Interaction[Client]) -> Result:
             return Result.next_model(model=ThirdModel((*self.status, state)))
 
-        return Button(label=f'{state+1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', callback=inner, row=1)
 
 
 class ThirdModel(ModelBase):
@@ -67,7 +67,7 @@ class ThirdModel(ModelBase):
         def inner(_: Interaction[Client]) -> Result:
             return Result.next_model(model=FourthModel((*self.status, state)))
 
-        return Button(label=f'{state+1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', callback=inner, row=1)
 
 
 class FourthModel(ModelBase):
@@ -91,7 +91,7 @@ class FourthModel(ModelBase):
         def inner(_: Interaction[Client]) -> Result:
             return Result.next_model(model=FinishModel((*self.status, state)))
 
-        return Button(label=f'{state+1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', callback=inner, row=1)
 
 
 class FinishModel(ModelBase):
