@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = '0.1.6'
+__version__ = '0.1.7'
 
 from .controller import *
 from .external_task import *
