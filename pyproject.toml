@@ -155,6 +155,10 @@ quote-style = "single"
 [tool.pdm.build]
 includes = ["discord"]
 
+[tool.pdm.version]
+source = "file"
+path = "discord/ext/flow/__init__.py"
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
