@@ -203,11 +203,22 @@ class Controller:
 
     async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
         pending_tasks: set[Task[Result]] = set()
+
         while not view.is_finished():
-            pending_tasks |= {
-                *(t.task for t in self.persistent_tasks if not t.done()),
-                *(t.task for t in self.model_tasks if not t.done()),
-            }
+            new_pending_tasks: set[Task[Result]] = set()
+            done_tasks: set[Task[Result]] = set()
+            for t in self.persistent_tasks + self.model_tasks:
+                if t.task.done():
+                    done_tasks.add(t.task)
+                else:
+                    new_pending_tasks.add(t.task)
+
+            pending_tasks |= new_pending_tasks
+            for t in done_tasks:
+                ret = await exec_result(view, t.result())
+                if ret is not None or view.is_finished():
+                    return ret
+
             done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
 
             # check exceptions
