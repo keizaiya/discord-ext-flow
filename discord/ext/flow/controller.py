@@ -119,6 +119,7 @@ class Controller:
             messageable (Messageable | Interaction): Messageable or interaction to send first message.
             message (discord.Message | None): The first target for editing if edit_original is True. Defaults to None.
         """
+        print('invoke')
 
         async def cleanup(_c: type[BaseException] | None, _e: BaseException | None, _t: TracebackType | None) -> None:
             await force_cancel_tasks(t.task for t in self.model_tasks)
@@ -168,6 +169,7 @@ class Controller:
         messageable: Messageable | Interaction[Client],
         edit_target: _Editable | None,
     ) -> tuple[ModelBase, Interaction[Client] | Messageable, _Editable] | None:
+        print('_send')
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
 
@@ -176,9 +178,11 @@ class Controller:
             await maybe_coroutine(model.after_invoke)
             return None
 
+        print('before sender')
         view = _View(config=await maybe_coroutine(model.view_config), items=msg.items, controller=self)
         message = await send_helper(messageable, msg, view, edit_target)
 
+        print('sended')
         self._get_view_wait_task(view)
         result = await self._wait_result(view)
         assert view.is_finished()
@@ -202,9 +206,11 @@ class Controller:
         return task
 
     async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+        print('_wait_result')
         pending_tasks: set[Task[Result]] = set()
 
         while not view.is_finished():
+            print('Waiting for external tasks...')
             for tasks in (self.persistent_tasks, self.model_tasks):  # exec new tasks.
                 new_pending_tasks: set[Task[Result]] = set()
                 new_done_tasks: set[ExternalResultTask] = set()
@@ -216,12 +222,14 @@ class Controller:
 
                 pending_tasks |= new_pending_tasks
                 for ert in new_done_tasks:
+                    print('done(before wait) task: ', id(ert))
                     ret = await exec_result(view, ert.result())
                     tasks.remove(ert)
                     if ret is not None or view.is_finished():
                         return ret
 
             done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
+            print('wait first result done')
 
             # check exceptions
             exceptions: list[Exception] = []
@@ -241,6 +249,7 @@ class Controller:
 
             # check done tasks
             for t in done_tasks:
+                print('done(when wait) task: ', id(t))
                 ret = await exec_result(view, t.result())
                 if ret is not None or view.is_finished():
                     self.persistent_tasks = [ert for ert in self.persistent_tasks if not ert.done()]

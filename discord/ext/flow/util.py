@@ -120,35 +120,45 @@ async def send_helper(
     edit_target: _Editable | None,
 ) -> _Editable:
     """Helper function to send message. use messageable or interaction."""
+    print('send_helper')
     kwargs = message._to_dict()
     if view is not None:
         kwargs['view'] = view
 
     # if edit
     if message.edit_original:
+        print('edit original')
         if isinstance(messageable, Interaction) and not messageable.response.is_done():
+            print('has interaction response')
             if messageable.message is not None:  # Interaction.message is not None -> can edit
                 await messageable.response.edit_message(**into_edit_kwargs(kwargs))
                 return await messageable.original_response()  # type: ignore[reportReturnType, return-value]
         elif edit_target is not None:
+            print('has edit_target')
             return await edit_target.edit(**into_edit_kwargs(kwargs))
+        print('fallback to send message')
         # fallback to send message
 
+    print('send message')
     # if send
     msg: Message
     delete_after = kwargs.get('delete_after', None)
     ephemeral = kwargs.get('ephemeral', False)
     kwargs = into_send_kwargs(kwargs)
     if isinstance(messageable, Interaction):
+        print('messageable is Interaction')
         if messageable.response.is_done():
+            print('interaction response is done')
             msg = await messageable.followup.send(wait=True, ephemeral=ephemeral, **kwargs)
         else:
+            print('interaction response is not done')
             await messageable.response.send_message(ephemeral=ephemeral, **kwargs)
             msg = await messageable.original_response()
 
         if delete_after is not None:
             await msg.delete(delay=delete_after)
     else:
+        print('messageable is Messageable')
         # type-ignore: can pass None to delete_after
         msg = await messageable.send(delete_after=delete_after, **kwargs)  # type: ignore[reportArgumentType, arg-type]
     # type-ignore: return type is Message, InteractionMessage or WebhookMessage, which are also _Editable
@@ -211,6 +221,7 @@ async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interacti
         tuple[ModelBase, Interaction[Client] | Messageable] | None: If the result indicates a model transition,
             returns the new model and the messageable context. Otherwise, returns None.
     """
+    print('exec_result')
     if result._interaction is not None:
         messageable = result._interaction
     else:
