@@ -205,23 +205,21 @@ class Controller:
         pending_tasks: set[Task[Result]] = set()
 
         while not view.is_finished():
-            new_pending_tasks: set[Task[Result]] = set()
-            new_done_tasks: set[ExternalResultTask] = set()
-            for t in self.persistent_tasks + self.model_tasks:
-                if t.task.done():
-                    new_done_tasks.add(t)
-                else:
-                    new_pending_tasks.add(t.task)
+            for tasks in (self.persistent_tasks, self.model_tasks):  # exec new tasks.
+                new_pending_tasks: set[Task[Result]] = set()
+                new_done_tasks: set[ExternalResultTask] = set()
+                for ert in tasks:
+                    if ert.task.done():
+                        new_done_tasks.add(ert)
+                    else:
+                        new_pending_tasks.add(ert.task)
 
-            pending_tasks |= new_pending_tasks
-            remove: set[ExternalResultTask] = set()
-            for t in new_done_tasks:
-                remove.add(t)
-                ret = await exec_result(view, t.result())
-                if ret is not None or view.is_finished():
-                    self.persistent_tasks = [t for t in self.persistent_tasks if t not in remove]
-                    self.model_tasks = [t for t in self.model_tasks if t not in remove]
-                    return ret
+                pending_tasks |= new_pending_tasks
+                for ert in new_done_tasks:
+                    ret = await exec_result(view, ert.result())
+                    tasks.remove(ert)
+                    if ret is not None or view.is_finished():
+                        return ret
 
             done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
 
