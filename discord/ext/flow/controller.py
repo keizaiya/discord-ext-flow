@@ -222,7 +222,7 @@ class Controller:
 
                 pending_tasks |= new_pending_tasks
                 for ert in new_done_tasks:
-                    logger.info('done(before wait) task: ', id(ert))
+                    logger.info('done(before wait) task: %d', id(ert))
                     ret = await exec_result(view, ert.result())
                     tasks.remove(ert)
                     if ret is not None or view.is_finished():
@@ -248,16 +248,18 @@ class Controller:
                 await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
 
             # check done tasks
+            remove: set[Task[Result]] = set()
             for t in done_tasks:
-                logger.info('done(when wait) task: ', id(t))
+                logger.info('done(when wait) task: %d', id(t))
+                remove.add(t)
                 ret = await exec_result(view, t.result())
                 if ret is not None or view.is_finished():
-                    self.persistent_tasks = [ert for ert in self.persistent_tasks if not ert.done()]
-                    self.model_tasks = [ert for ert in self.model_tasks if not ert.done()]
+                    self.persistent_tasks = [ert for ert in self.persistent_tasks if ert.task in remove]
+                    self.model_tasks = [ert for ert in self.model_tasks if ert.task in remove]
                     return ret
+            self.persistent_tasks = [ert for ert in self.persistent_tasks if ert.task in remove]
+            self.model_tasks = [ert for ert in self.model_tasks if ert.task in remove]
 
-        self.persistent_tasks = [ert for ert in self.persistent_tasks if not ert.done()]
-        self.model_tasks = [ert for ert in self.model_tasks if not ert.done()]
         return None
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
