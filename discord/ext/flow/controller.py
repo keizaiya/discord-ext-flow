@@ -206,17 +206,21 @@ class Controller:
 
         while not view.is_finished():
             new_pending_tasks: set[Task[Result]] = set()
-            done_tasks: set[Task[Result]] = set()
+            new_done_tasks: set[ExternalResultTask] = set()
             for t in self.persistent_tasks + self.model_tasks:
                 if t.task.done():
-                    done_tasks.add(t.task)
+                    new_done_tasks.add(t)
                 else:
                     new_pending_tasks.add(t.task)
 
             pending_tasks |= new_pending_tasks
-            for t in done_tasks:
+            remove: set[ExternalResultTask] = set()
+            for t in new_done_tasks:
+                remove.add(t)
                 ret = await exec_result(view, t.result())
                 if ret is not None or view.is_finished():
+                    self.persistent_tasks = [t for t in self.persistent_tasks if t not in remove]
+                    self.model_tasks = [t for t in self.model_tasks if t not in remove]
                     return ret
 
             done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
