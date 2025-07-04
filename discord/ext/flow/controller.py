@@ -243,8 +243,12 @@ class Controller:
             for t in done_tasks:
                 ret = await exec_result(view, t.result())
                 if ret is not None or view.is_finished():
+                    self.persistent_tasks = [ert for ert in self.persistent_tasks if not ert.done()]
+                    self.model_tasks = [ert for ert in self.model_tasks if not ert.done()]
                     return ret
 
+        self.persistent_tasks = [ert for ert in self.persistent_tasks if not ert.done()]
+        self.model_tasks = [ert for ert in self.model_tasks if not ert.done()]
         return None
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
