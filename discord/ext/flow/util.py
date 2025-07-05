@@ -264,3 +264,47 @@ async def force_cancel_tasks(tasks: Iterable[Task[Any]]) -> None:
     for task in tasks:
         task.cancel()
     await gather(*tasks, return_exceptions=True)
+
+
+import reprlib
+
+_UNSET = object()
+
+
+class DebugDescriptor:
+    def __init__(self) -> None:
+        self.default = _UNSET
+
+    def __set_name__(self, owner: type, attr_name: str) -> None:
+        self.name = attr_name
+        self.private_name = f'_{attr_name}'
+
+    def __get__(self, instance: object, owner: type) -> _AttributeLogger | Self:
+        if instance is None:
+            return self
+        value = getattr(instance, self.private_name, self.default)
+        if value is _UNSET:
+            logger.debug(f'{self.name} is UNSET')
+            raise AttributeError(f'{self.name} is not set on {instance!r}')
+        logger.debug(f'Getting {self.name}: id={id(value)}, repr={reprlib.repr(value)}')
+        return _AttributeLogger(value, self.name)
+
+    def __set__(self, instance: object, value: object) -> None:
+        old = getattr(instance, self.private_name, self.default)
+        setattr(instance, self.private_name, value)
+        old_repr = 'UNSET' if old is _UNSET else reprlib.repr(old)
+        logger.debug(f'Setting {self.name}: id={id(old)} ({old_repr}) → id={id(value)} ({reprlib.repr(value)})')
+
+
+class _AttributeLogger:
+    def __init__(self, obj: object, prefix: str) -> None:
+        self._obj = obj
+        self._prefix = prefix
+
+    def __getattr__(self, item: str) -> Any:
+        val = getattr(self._obj, item)
+        logger.debug(f'{self._prefix}.{item} accessed → id={id(val)}, repr={reprlib.repr(val)}')
+        return val
+
+    def __repr__(self) -> str:
+        return repr(self._obj)

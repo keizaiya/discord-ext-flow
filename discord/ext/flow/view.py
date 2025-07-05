@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import reprlib
 from asyncio import CancelledError, Future, get_running_loop
 from contextlib import suppress
 from dataclasses import replace
@@ -10,7 +11,7 @@ from discord import Client, Interaction, ui
 from discord.utils import MISSING, maybe_coroutine
 
 from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
-from .util import map_or, unwrap_or
+from .util import DebugDescriptor, map_or, unwrap_or
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -158,7 +159,7 @@ class _ChannelSelect(ui.ChannelSelect['_View']):
 
 class _View(ui.View):
     config: ViewConfig
-    fut: Future[Result]
+    fut: Future[Result] = DebugDescriptor()  # type: ignore
     controller: Controller
 
     def __init__(self, config: ViewConfig, items: Sequence[ItemType], controller: Controller) -> None:
@@ -190,7 +191,8 @@ class _View(ui.View):
         if result._interaction is None:
             result = replace(result, _interaction=messageable)
         if self.fut.done():
-            logger.exception(f'future is already done. fut: {self.fut!r}, result: {result!r}')
+            logger.exception(f'future is already done. fut: {self.fut!r}, result: {reprlib.repr(result)}')
+        logger.info(f'future id: {id(self.fut)}')
         self.fut.set_result(result)
 
     async def _wait(self) -> Result:
