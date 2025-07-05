@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asyncio import sleep, wait
+from asyncio import FIRST_COMPLETED, sleep, wait
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from enum import Enum
@@ -303,7 +303,7 @@ class Controller:
                         await sleep(0)
                     continue
 
-                await wait((t.task for t in (persistent_tasks | model_tasks)), return_when=asyncio.FIRST_COMPLETED)
+                await wait((t.task for t in (persistent_tasks | model_tasks)), return_when=FIRST_COMPLETED)
                 for tasks in (persistent_tasks, model_tasks):  # exec new tasks.
                     done_tasks: set[ExternalResultTask] = set()
                     raised_tasks: set[ExternalResultTask] = set()
