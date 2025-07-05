@@ -105,6 +105,7 @@ class Controller:
             messageable (Messageable | Interaction): Messageable or interaction to send first message.
             message (discord.Message | None): The first target for editing if edit_original is True. Defaults to None.
         """
+
         async def cleanup(_c: type[BaseException] | None, _e: BaseException | None, _t: TracebackType | None) -> None:
             await force_cancel_tasks(t.task for t in self.external_tasks)
 
