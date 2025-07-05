@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import sleep, wait
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from enum import Enum
@@ -185,7 +186,7 @@ class Controller:
 
         logger.info('sended')
         self._get_view_wait_task(view)
-        result = await self._wait_result(view)
+        result = await self._wait_result_n(view)
         assert view.is_finished()
         view.fut.cancel()
 
@@ -236,7 +237,7 @@ class Controller:
 
                 pending_tasks |= new_pending_tasks
                 for ert in new_done_tasks:
-                    logger.info('done(before wait) task: %d', id(ert))
+                    logger.info('done(before wait) task: %d', id(ert.task))
                     ret = await exec_result(view, ert.result())
                     tasks.remove(ert)
                     if ret is not None or view.is_finished():
@@ -271,13 +272,82 @@ class Controller:
                 remove.add(t)
                 ret = await exec_result(view, t.result())
                 if ret is not None or view.is_finished():
+                    logger.info(
+                        'exec_result returned: %s. remove tasks: %s', ret, ', '.join(str(id(t)) for t in remove)
+                    )
+                    logger.info(
+                        'before count of persistent_tasks: %d, model_tasks: %d',
+                        len(self.persistent_tasks),
+                        len(self.model_tasks),
+                    )
                     self.persistent_tasks = [ert for ert in self.persistent_tasks if ert.task in remove]
                     self.model_tasks = [ert for ert in self.model_tasks if ert.task in remove]
+                    logger.info(
+                        'after count of persistent_tasks: %d, model_tasks: %d',
+                        len(self.persistent_tasks),
+                        len(self.model_tasks),
+                    )
                     return ret
             self.persistent_tasks = [ert for ert in self.persistent_tasks if ert.task in remove]
             self.model_tasks = [ert for ert in self.model_tasks if ert.task in remove]
 
         return None
+
+    async def _wait_result_n(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+        persistent_tasks, self.persistent_tasks = set(self.persistent_tasks), []
+        model_tasks, self.model_tasks = set(self.model_tasks), []
+        try:
+            while not view.is_finished():
+                if not persistent_tasks and not model_tasks:
+                    while not self.persistent_tasks and not self.model_tasks:  # noqa: ASYNC110
+                        await sleep(0)
+                    continue
+
+                await wait((t.task for t in (persistent_tasks | model_tasks)), return_when=asyncio.FIRST_COMPLETED)
+                for tasks in (persistent_tasks, model_tasks):  # exec new tasks.
+                    done_tasks: set[ExternalResultTask] = set()
+                    raised_tasks: set[ExternalResultTask] = set()
+                    for ert in tasks:
+                        if not ert.task.done():
+                            continue
+                        try:
+                            ert.task.result()
+                        except BaseException:  # noqa: BLE001
+                            raised_tasks.add(ert)
+                        else:
+                            done_tasks.add(ert)
+
+                    exceptions: list[Exception] = []
+                    base_exceptions: list[BaseException] = []
+                    for t in raised_tasks:
+                        if t.task.cancelled() or not t.done() or (e := t.task.exception()) is None:
+                            continue
+                        if isinstance(e, Exception):
+                            exceptions.append(e)
+                        else:
+                            base_exceptions.append(e)
+
+                    if base_exceptions:
+                        raise BaseExceptionGroup('Errors occurred in external tasks', base_exceptions)
+                    if exceptions:
+                        await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
+
+                    for done in done_tasks:
+                        logger.info('done(before wait) task: %d', id(done.task))
+                        tasks.remove(done)
+                        ret = await exec_result(view, done.result())
+                        if ret is not None or view.is_finished():
+                            return ret
+                new_persistent_tasks, self.persistent_tasks = set(self.persistent_tasks), []
+                new_model_tasks, self.model_tasks = set(self.model_tasks), []
+
+                persistent_tasks |= new_persistent_tasks
+                model_tasks |= new_model_tasks
+        finally:
+            persistent_tasks.update(self.persistent_tasks)
+            self.persistent_tasks = list(persistent_tasks)
+            model_tasks.update(self.model_tasks)
+            self.model_tasks = list(model_tasks)
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
         """A Callback that is called when external tasks raised exceptions.

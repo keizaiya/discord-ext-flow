@@ -190,7 +190,7 @@ class _View(ui.View):
         self.fut.set_result(result)
 
     async def _wait(self) -> Result:
-        logger.info('_wait')
+        logger.info('_wait: waiting for fut id: %d', id(self.fut))
         ret = await self.fut
         logger.info(f'_wait: {ret}, fut id: {id(self.fut)}')
         self.fut = get_running_loop().create_future()
