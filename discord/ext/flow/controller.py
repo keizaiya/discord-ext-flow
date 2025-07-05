@@ -158,6 +158,7 @@ class Controller:
             self.persistent_tasks.append(task)
         else:
             self.model_tasks.append(task)
+        logger.info('create_external_result: %s, task id: %d, life_time: %s', name, id(task.task), life_time.name)
         return task
 
     def _set_to_context(self) -> _AutoRestControllerContext:
