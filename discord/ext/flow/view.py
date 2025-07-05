@@ -4,7 +4,6 @@ from asyncio import CancelledError, Future, get_running_loop
 from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING
-from venv import logger
 
 from discord import Client, Interaction, ui
 from discord.utils import MISSING, maybe_coroutine
@@ -190,9 +189,6 @@ class _View(ui.View):
         self.fut.set_result(result)
 
     async def _wait(self) -> Result:
-        logger.info('_wait: waiting for fut id: %d', id(self.fut))
         ret = await self.fut
-        logger.info(f'_wait: {ret}, fut id: {id(self.fut)}')
         self.fut = get_running_loop().create_future()
-        logger.info(f'new fut id: {id(self.fut)}')
         return ret
