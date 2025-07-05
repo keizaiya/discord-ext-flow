@@ -197,15 +197,12 @@ class Controller:
 
                 wait_result = await wait_first_completed_external_result_task(tasks)
                 base_exceptions = [e for t in wait_result.base_exceptions if (e := t.task.exception()) is not None]
-                exceptions = [
-                    e
-                    for t in wait_result.exceptions
-                    if (e := t.task.exception()) is not None and isinstance(e, Exception)
-                ]
+                exceptions = [e for t in wait_result.exceptions if isinstance((e := t.task.exception()), Exception)]
                 if base_exceptions:
                     raise BaseExceptionGroup('Errors occurred in external tasks', base_exceptions)
                 if exceptions:
                     await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
+                tasks -= wait_result.exceptions | wait_result.base_exceptions
 
                 for done in wait_result.done:
                     tasks.remove(done)

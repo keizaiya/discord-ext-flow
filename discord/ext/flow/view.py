@@ -3,6 +3,7 @@ from __future__ import annotations
 from asyncio import CancelledError, Future, get_running_loop
 from contextlib import suppress
 from dataclasses import replace
+from logging import getLogger
 from typing import TYPE_CHECKING
 
 from discord import Client, Interaction, ui
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from .controller import Controller
     from .model import ItemType, ViewConfig
     from .result import Result
+
+logger = getLogger(__name__)
 
 
 class _Button(ui.Button['_View']):
@@ -186,6 +189,8 @@ class _View(ui.View):
     async def _set_result(self, result: Result, messageable: Interaction[Client]) -> None:
         if result._interaction is None:
             result = replace(result, _interaction=messageable)
+        if self.fut.done():
+            logger.exception(f'future is already done. fut: {self.fut!r}, result: {result!r}')
         self.fut.set_result(result)
 
     async def _wait(self) -> Result:

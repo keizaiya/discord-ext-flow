@@ -186,9 +186,9 @@ async def wait_first_completed_external_result_task(fs: Iterable[ExternalResultT
     Returns:
         WaitResult: result as a named tuple.
     """
-    aws = {t.task for t in fs}
-
-    await wait(aws, return_when=FIRST_COMPLETED)
+    if all(not t.done() for t in fs):
+        aws = {t.task for t in fs}
+        await wait(aws, return_when=FIRST_COMPLETED)
 
     base_exceptions: set[ExternalResultTask] = set()
     exceptions: set[ExternalResultTask] = set()
