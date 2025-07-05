@@ -216,8 +216,13 @@ class Controller:
     async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
         logger.info('_wait_result')
         pending_tasks: set[Task[Result]] = set()
+        counter = 0
 
         while not view.is_finished():
+            counter += 1
+            if counter > 10:
+                logger.warning('test mode: force cancel tasks')
+                raise RuntimeError('for testing...')
             logger.info('Waiting for external tasks...')
             for tasks in (self.persistent_tasks, self.model_tasks):  # exec new tasks.
                 new_pending_tasks: set[Task[Result]] = set()
@@ -235,9 +240,12 @@ class Controller:
                     tasks.remove(ert)
                     if ret is not None or view.is_finished():
                         return ret
-
+            logger.info('pending tasks: %s', ', '.join(str(id(t)) for t in pending_tasks) or 'none')
+            if not pending_tasks:
+                logger.warning('test mode: No pending tasks.')
+                raise RuntimeError('No pending tasks.')
             done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
-            logger.info('wait first result done')
+            logger.info('wait first result done: %s', ', '.join(str(id(t)) for t in done_tasks) or 'none')
 
             # check exceptions
             exceptions: list[Exception] = []
