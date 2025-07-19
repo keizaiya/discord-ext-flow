@@ -99,7 +99,7 @@ ignore = [
     # Ignore long message in raise
     "TRY003",
 
-    # ruff recomended avoid rules if use ruff formatter
+    # ruff recommended avoid rules if use ruff formatter
     "D206",
     "D300",
     "E111",
