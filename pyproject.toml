@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-    "discord.py>=2.4",
+    "discord.py>=2.5",
     # .
 ]
 
