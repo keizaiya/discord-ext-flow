@@ -179,11 +179,15 @@ class Controller:
         return None if result is None else (*result, message)
 
     def _get_view_wait_task(self, view: _View) -> ExternalResultTask:
+        def done_callback(task: Task[Result]) -> None:
+            if not view.is_finished() and not task.cancelled():
+                self._get_view_wait_task(view)
+
         # Creates a task that waits for the view to finish or receive an interaction.
         # Re-registers itself upon completion if not cancelled to continuously wait for the next interaction.
         task = self.create_external_result(view._wait, name='inner-view-wait', life_time=ExternalTaskLifeTime.MODEL)
         # Re-create the wait task if the view is still active (not cancelled) after the previous wait completed.
-        task.task.add_done_callback(lambda t: self._get_view_wait_task(view) if not t.cancelled() else None)
+        task.task.add_done_callback(done_callback)
         return task
 
     async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
