@@ -222,6 +222,7 @@ async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interacti
             msg = result._message
             view.clear_items()
             view.set_items(msg.items or ())
+            view._cleanup_fut()
             await send_helper(messageable, msg, view, None)
             if not msg.items:
                 view.stop()
