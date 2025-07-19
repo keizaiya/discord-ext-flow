@@ -90,6 +90,8 @@ ignore = [
     "EM",
     # Allow use boolean type hint in positional argument
     "FBT",
+    # Allow use f-string for logging
+    "G004",
     # Allow private member access (e.g. _foo)
     "SLF001",
     # Allow use constant variable
@@ -99,7 +101,7 @@ ignore = [
     # Ignore long message in raise
     "TRY003",
 
-    # ruff recomended avoid rules if use ruff formatter
+    # ruff recommended avoid rules if use ruff formatter
     "D206",
     "D300",
     "E111",

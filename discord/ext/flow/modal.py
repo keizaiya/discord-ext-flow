@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Self, TypedDict, TypeVarTuple, overload
 from discord import TextStyle, ui
 from discord.utils import maybe_coroutine
 
-from .controller import Controller, ExternalTaskLifeTime, _get_controller
+from .controller import Controller, _get_controller
+from .external_task import ExternalTaskLifeTime
 
 if TYPE_CHECKING:
     from typing import TypeAlias
