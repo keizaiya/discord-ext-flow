@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from asyncio import FIRST_COMPLETED, gather, wait
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeVar, overload
+from typing import TYPE_CHECKING, NamedTuple, Protocol, TypedDict
 
 from discord import Interaction, Message
 
 from .result import _ResultTypeEnum
 
 if TYPE_CHECKING:
-    from asyncio import Future, Task
+    from asyncio import Task
     from collections.abc import Callable, Iterable, Sequence
-    from typing import Self, TypeVar
+    from typing import Any, Self, TypeVar
 
     from discord import AllowedMentions, Attachment, Client, Embed, File
     from discord.abc import Messageable
     from discord.ui import View
 
+    from .external_task import ExternalResultTask
     from .model import Message as MessageData, MessageKwargs, ModelBase
     from .result import Result
     from .view import _View
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
     T = TypeVar('T')
     U = TypeVar('U')
     V = TypeVar('V')
-    Fut_contra = TypeVar('Fut_contra', contravariant=True, bound=Future)  # type: ignore[reportMissingTypeArgument, type-arg]
 
 
 def unwrap_or(value: T | None, default: U) -> T | U:
@@ -155,44 +155,54 @@ async def send_helper(
     return msg  # type: ignore[reportReturnType, return-value]
 
 
-@overload
-async def wait_first_result(fs: Iterable[Task[T]]) -> tuple[set[Task[T]], set[Task[T]], set[Task[T]]]: ...
-@overload
-async def wait_first_result(fs: Iterable[Future[T]]) -> tuple[set[Future[T]], set[Future[T]], set[Future[T]]]: ...
-async def wait_first_result(fs: Iterable[Fut_contra]) -> tuple[set[Fut_contra], set[Fut_contra], set[Fut_contra]]:
+class WaitResult(NamedTuple):
+    """Result of wait_first_completed_external_result_task.
+
+    - done: A set of tasks that completed successfully.
+    - base_exceptions: A set of tasks that raised exceptions(BaseException).
+    - exceptions: A set of tasks that raised exceptions(Exception).
+    - pending: A set of tasks that are still pending.
+    """
+
+    done: set[ExternalResultTask]
+    base_exceptions: set[ExternalResultTask]
+    exceptions: set[ExternalResultTask]
+    pending: set[ExternalResultTask]
+
+
+async def wait_first_completed_external_result_task(fs: Iterable[ExternalResultTask]) -> WaitResult:
     """Waits for the first future/task in the iterable `fs` to complete.
 
-    Returns as soon as at least one task completes successfully.
-    If all tasks raise exceptions, returns the set of tasks that raised exceptions,
-    and empty sets for done and pending tasks.
+    Call await wait(fs, return_when=FIRST_COMPLETED) to wait for the first task to complete.
+    Different from asyncio.wait, this function return split sets of tasks based on their completion status.
 
     Args:
-        fs (Iterable[Fut_contra]): Iterable of futures or tasks.
+        fs (Iterable[ExternalResultTask]): Iterable of futures or tasks.
 
     Returns:
-        tuple[set[Fut_contra], set[Fut_contra], set[Fut_contra]]: A tuple containing:
-            - A set of tasks that completed successfully. (done)
-            - A set of tasks that raised exceptions. (exceptions)
-            - A set of tasks that are still pending. (pending)
+        WaitResult: result as a named tuple.
     """
-    pending_tasks: set[Fut_contra] = set(fs)
-    exceptions: set[Fut_contra] = set()
-    done_tasks: set[Fut_contra] = set()
+    if all(not t.done() for t in fs):
+        aws = {t.task for t in fs}
+        await wait(aws, return_when=FIRST_COMPLETED)
 
-    while pending_tasks:
-        done, pending = await wait(pending_tasks, return_when=FIRST_COMPLETED)
-        for task in done:
-            try:
-                task.result()
-            except Exception:  # noqa: BLE001
-                exceptions.add(task)  # type: ignore[reportUnknownArgumentType]
-            else:
-                done_tasks.add(task)  # type: ignore[reportUnknownArgumentType]
-        if done_tasks:
-            return done_tasks, exceptions, pending
-        pending_tasks = pending
-
-    return set(), exceptions, set()
+    base_exceptions: set[ExternalResultTask] = set()
+    exceptions: set[ExternalResultTask] = set()
+    done_tasks: set[ExternalResultTask] = set()
+    pending_tasks: set[ExternalResultTask] = set()
+    for task in fs:
+        if not task.done():
+            pending_tasks.add(task)
+            continue
+        try:
+            task.result()
+        except Exception:  # noqa: BLE001
+            exceptions.add(task)
+        except BaseException:  # noqa: BLE001
+            base_exceptions.add(task)
+        else:
+            done_tasks.add(task)
+    return WaitResult(done_tasks, base_exceptions, exceptions, pending_tasks)
 
 
 async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
