@@ -4,6 +4,8 @@ dynamic = ["version"]
 description = ""
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = []
 authors = [
     { name = "hawk-tomy", email = "67221751+hawk-tomy@users.noreply.github.com" },
@@ -31,6 +33,7 @@ dev = [
 [project.urls]
 Source = "https://github.com/keizaiya/discord-ext-flow"
 
+# pyright settings
 [tool.pyright]
 typeCheckingMode = "strict"
 include = ["discord"]
@@ -53,6 +56,7 @@ reportPrivateUsage = false
 reportUnusedImport = false
 reportUnnecessaryIsInstance = false
 
+# mypy settings
 [tool.mypy]
 explicit_package_bases = true
 strict = true
@@ -65,20 +69,20 @@ allow_redefinition = true
 warn_unused_ignores = false
 warn_no_return = false
 
+# ruff settings
 [tool.ruff]
 target-version = "py312"
 line-length = 120
 exclude = ["venv", ".venv"]
 fix = true
 
+# ruff lint settings
 [tool.ruff.lint]
 select = [
     "ALL",
     # .
 ]
 ignore = [
-    # Ignore missing self/cls annotation
-    "ANN1",
     # Ignore missing docstring in public module
     "D100",
     # Ignore missing docstring in public package
@@ -150,9 +154,11 @@ convention = "google"
 required-imports = ["from __future__ import annotations"]
 combine-as-imports = true
 
+# ruff formatter settings
 [tool.ruff.format]
 quote-style = "single"
 
+# build settings
 [tool.pdm.build]
 includes = ["discord"]
 
