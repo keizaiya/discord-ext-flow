@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio import Task, sleep
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from logging import getLogger
@@ -9,11 +10,10 @@ from discord.utils import maybe_coroutine
 
 from .external_task import ExternalResultTask, ExternalTaskLifeTime
 from .result import Result
-from .util import exec_result, force_cancel_tasks, send_helper, wait_first_result
+from .util import exec_result, force_cancel_tasks, send_helper, wait_first_completed_external_result_task
 from .view import _View
 
 if TYPE_CHECKING:
-    from asyncio import Task
     from types import TracebackType
     from typing import Self
 
@@ -191,37 +191,34 @@ class Controller:
         return task
 
     async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
-        pending_tasks: set[Task[Result]] = set()
-        while not view.is_finished():
-            pending_tasks |= {
-                *(t.task for t in self.persistent_tasks if not t.done()),
-                *(t.task for t in self.model_tasks if not t.done()),
-            }
-            done_tasks, raised_tasks, pending_tasks = await wait_first_result(pending_tasks)
+        tasks: set[ExternalResultTask] = set()
+        try:
+            while not view.is_finished():
+                new_tasks, self.external_tasks = self.external_tasks, set()
+                tasks |= new_tasks
 
-            # check exceptions
-            exceptions: list[Exception] = []
-            base_exceptions: list[BaseException] = []
-            for t in raised_tasks:
-                if t.cancelled() or not t.done() or (e := t.exception()) is None:
+                if not tasks:  # wait for new external tasks
+                    while not self.external_tasks:  # noqa: ASYNC110
+                        await sleep(0)
                     continue
-                if isinstance(e, Exception):
-                    exceptions.append(e)
-                else:
-                    base_exceptions.append(e)
 
-            if base_exceptions:
-                raise BaseExceptionGroup('Errors occurred in external tasks', base_exceptions)
-            if exceptions:
-                await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
+                wait_result = await wait_first_completed_external_result_task(tasks)
+                base_exceptions = [e for t in wait_result.base_exceptions if (e := t.task.exception()) is not None]
+                exceptions = [e for t in wait_result.exceptions if isinstance((e := t.task.exception()), Exception)]
+                if base_exceptions:
+                    raise BaseExceptionGroup('Errors occurred in external tasks', base_exceptions)
+                if exceptions:
+                    await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
+                tasks -= wait_result.exceptions | wait_result.base_exceptions
 
-            # check done tasks
-            for t in done_tasks:
-                ret = await exec_result(view, t.result())
-                if ret is not None or view.is_finished():
-                    return ret
+                for done in wait_result.done:
+                    tasks.remove(done)
+                    ret = await exec_result(view, done.result())
+                    if ret is not None or view.is_finished():
+                        return ret
 
-        return None
+        finally:
+            self.external_tasks |= tasks
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
         """A Callback that is called when external tasks raised exceptions.
