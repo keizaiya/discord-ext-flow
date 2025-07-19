@@ -20,29 +20,58 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install PDM
-        uses: pdm-project/setup-pdm@v3
+      - name: Set up CPython ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: true
-          cache-dependency-path: ./pyproject.toml
 
-      - name: Install Dependencies
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.0"
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: uv Install Dependencies
         run: |
-          pdm install --frozen-lockfile -G:all
+          uv sync --group dev
 
       - name: pyright
+        id: pyright
+        continue-on-error: true
         run: |
-          pdm run pyright .
+          uv run pyright .
 
       - name: mypy
+        id: mypy
+        continue-on-error: true
         run: |
-          pdm run mypy .
+          uv run mypy .
 
-      - name: ruff lint
+      - name: ruff-check
+        id: ruff-check
+        continue-on-error: true
         run: |
-          pdm run ruff check
+          uv run ruff check --no-fix --output-format=github .
 
-      - name: ruff format
+      - name: ruff-format
+        id: ruff-format
+        continue-on-error: true
         run: |
-          pdm run ruff format --check
+          uv run ruff format --check --diff .
+
+      - name: Check failure
+        env:
+          text: "\
+            ${{ steps.ruff-format.outcome == 'failure'        && 'ruff format,'     || '' }}\
+            ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'      || '' }}\
+            ${{ steps.pyright.outcome == 'failure'            && 'pyright,'         || '' }}\
+            ${{ steps.mypy.outcome == 'failure'               && 'mypy,'            || '' }}\
+            "
+        run: |
+          if [ -n "${text}" ]; then
+            echo "failed: ${text}"
+            exit 1
+          else
+            echo "All success"
+          fi

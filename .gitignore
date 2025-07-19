@@ -1,3 +1,7 @@
+# uv
+.python-version
+uv.lock
+
 # pdm
 .pdm-python
 pdm.lock
