@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
-from enum import Enum
 from logging import getLogger
 from typing import TYPE_CHECKING
 
 from discord.utils import maybe_coroutine
 
-from .external_task import ExternalResultTask
+from .external_task import ExternalResultTask, ExternalTaskLifeTime
 from .result import Result
 from .util import exec_result, force_cancel_tasks, send_helper, wait_first_result
 from .view import _View
@@ -26,20 +25,9 @@ if TYPE_CHECKING:
     from .result import Result
     from .util import _Editable
 
-__all__ = ('Controller', 'ExternalTaskLifeTime', 'create_external_result')
+__all__ = ('Controller', 'create_external_result')
 
 logger = getLogger(__name__)
-
-
-class ExternalTaskLifeTime(Enum):
-    """External task life time.
-
-    PERSISTENT: Persistent task. This task will be kept until the flow is finished.
-    MODEL: Model task. This task will be removed when the model is changed.
-    """
-
-    PERSISTENT = 0
-    MODEL = 1
 
 
 controller_var = ContextVar['Controller | None'](f'{__name__}.controller_var', default=None)
@@ -96,13 +84,11 @@ class Controller:
     """
 
     model: ModelBase
-    persistent_tasks: list[ExternalResultTask]
-    model_tasks: list[ExternalResultTask]
+    external_tasks: set[ExternalResultTask]
 
     def __init__(self, initial_model: ModelBase) -> None:
         self.model = initial_model
-        self.persistent_tasks = []
-        self.model_tasks = []
+        self.external_tasks = set()
 
     def copy(self) -> Self:
         """Returns a copy of this controller.
@@ -121,8 +107,8 @@ class Controller:
         """
 
         async def cleanup(_c: type[BaseException] | None, _e: BaseException | None, _t: TracebackType | None) -> None:
-            await force_cancel_tasks(t.task for t in self.model_tasks)
-            await force_cancel_tasks(t.task for t in self.persistent_tasks)
+            await force_cancel_tasks(t.task for t in self.external_tasks)
+            self.external_tasks.clear()
 
         async with AsyncExitStack() as st:
             st.enter_context(self._set_to_context())
@@ -134,7 +120,9 @@ class Controller:
                 _model, messageable, message = ret
                 if model != _model:
                     model = _model
-                    await force_cancel_tasks(t.task for t in self.model_tasks)
+                    to_cancel = {t for t in self.external_tasks if t._lifetime.is_model()}
+                    await force_cancel_tasks(t.task for t in to_cancel)
+                    self.external_tasks -= to_cancel
 
     def create_external_result(
         self,
@@ -152,11 +140,8 @@ class Controller:
         Returns:
             ExternalResultTask: task of External result.
         """
-        task = ExternalResultTask(coro, name=name)
-        if life_time == ExternalTaskLifeTime.PERSISTENT:
-            self.persistent_tasks.append(task)
-        else:
-            self.model_tasks.append(task)
+        task = ExternalResultTask(coro, name=name, lifetime=life_time)
+        self.external_tasks.add(task)
         return task
 
     def _set_to_context(self) -> _AutoRestControllerContext:
