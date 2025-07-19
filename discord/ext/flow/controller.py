@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from asyncio import Task, sleep
+from asyncio import Event, Task
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from logging import getLogger
@@ -85,10 +85,12 @@ class Controller:
 
     model: ModelBase
     external_tasks: set[ExternalResultTask]
+    _external_task_event: Event
 
     def __init__(self, initial_model: ModelBase) -> None:
         self.model = initial_model
         self.external_tasks = set()
+        self._external_task_event = Event()
 
     def copy(self) -> Self:
         """Returns a copy of this controller.
@@ -142,6 +144,7 @@ class Controller:
         """
         task = ExternalResultTask(coro, name=name, lifetime=life_time)
         self.external_tasks.add(task)
+        self._external_task_event.set()
         return task
 
     def _set_to_context(self) -> _AutoRestControllerContext:
@@ -198,8 +201,8 @@ class Controller:
                 tasks |= new_tasks
 
                 if not tasks:  # wait for new external tasks
-                    while not self.external_tasks:  # noqa: ASYNC110
-                        await sleep(0)
+                    await self._external_task_event.wait()
+                    self._external_task_event.clear()
                     continue
 
                 wait_result = await wait_first_completed_external_result_task(tasks)
