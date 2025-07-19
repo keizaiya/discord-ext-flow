@@ -1,18 +1,21 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, Future, get_running_loop
+from asyncio import CancelledError, get_running_loop
 from contextlib import suppress
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from discord import Client, Interaction, ui
+from discord import ui
 from discord.utils import MISSING, maybe_coroutine
 
 from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
 from .util import map_or, unwrap_or
 
 if TYPE_CHECKING:
+    from asyncio import Future
     from collections.abc import Sequence
+
+    from discord import Interaction
 
     from .controller import Controller
     from .model import ItemType, ViewConfig
@@ -33,7 +36,7 @@ class _Button(ui.Button['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(await maybe_coroutine(self.config.callback, interaction), interaction)
 
@@ -58,7 +61,7 @@ class _Select(ui.Select['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(
                 await maybe_coroutine(self.config.callback, interaction, self.values), interaction
@@ -80,7 +83,7 @@ class _UserSelect(ui.UserSelect['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(
                 await maybe_coroutine(self.config.callback, interaction, self.values), interaction
@@ -102,7 +105,7 @@ class _RoleSelect(ui.RoleSelect['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(
                 await maybe_coroutine(self.config.callback, interaction, self.values), interaction
@@ -124,7 +127,7 @@ class _MentionableSelect(ui.MentionableSelect['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(
                 await maybe_coroutine(self.config.callback, interaction, self.values), interaction
@@ -146,7 +149,7 @@ class _ChannelSelect(ui.ChannelSelect['_View']):
         )
         self.config = config
 
-    async def callback(self, interaction: Interaction[Client]) -> None:
+    async def callback(self, interaction: Interaction) -> None:
         with self.view.controller._set_to_context(), suppress(CancelledError):
             await self.view._set_result(
                 await maybe_coroutine(self.config.callback, interaction, self.values), interaction
@@ -183,7 +186,7 @@ class _View(ui.View):
                 case ChannelSelect(_):
                     self.add_item(_ChannelSelect(item))
 
-    async def _set_result(self, result: Result, messageable: Interaction[Client]) -> None:
+    async def _set_result(self, result: Result, messageable: Interaction) -> None:
         if result._interaction is None:
             result = replace(result, _interaction=messageable)
         self.fut.set_result(result)

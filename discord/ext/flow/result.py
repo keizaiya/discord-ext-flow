@@ -5,7 +5,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from discord import Client, Interaction
+    from discord import Interaction
 
     from .model import Message, ModelBase
 
@@ -27,26 +27,26 @@ class Result:
     _type: _ResultTypeEnum
     _model: ModelBase | None = None
     _message: Message | None = None
-    _interaction: Interaction[Client] | None = None
+    _interaction: Interaction | None = None
     _is_end: bool = False
 
     @classmethod
-    def send_message(cls, message: Message, interaction: Interaction[Client] | None = None) -> Result:
+    def send_message(cls, message: Message, interaction: Interaction | None = None) -> Result:
         """Send message and same model.
 
         Args:
             message (Message): message to send.
-            interaction (Interaction[Client], optional): new interaction to send message. Defaults to None.
+            interaction (Interaction, optional): new interaction to send message. Defaults to None.
         """
         return Result(_type=_ResultTypeEnum.MESSAGE, _message=message, _interaction=interaction)
 
     @classmethod
-    def next_model(cls, model: ModelBase, interaction: Interaction[Client] | None = None) -> Result:
+    def next_model(cls, model: ModelBase, interaction: Interaction | None = None) -> Result:
         """Send message and next flow.
 
         Args:
             model (ModelBase): next model.
-            interaction (Interaction[Client], optional): new interaction to send message. Defaults to None.
+            interaction (Interaction, optional): new interaction to send message. Defaults to None.
         """
         return Result(_type=_ResultTypeEnum.MODEL, _model=model, _interaction=interaction)
 

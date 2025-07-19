@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, NamedTuple, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, NamedTuple
 
 from discord import ButtonStyle
 
@@ -20,12 +20,11 @@ __all__ = (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any, TypeAlias, TypedDict
+    from typing import Any, TypedDict
 
     from discord import (
         AllowedMentions,
         ChannelType,
-        Client,
         ClientUser,
         Embed,
         Emoji,
@@ -72,7 +71,7 @@ if TYPE_CHECKING:
         poll: Poll
 
     # copied from discord.ui.select
-    ValidDefaultValues = (
+    type ValidDefaultValues = (
         SelectDefaultValue
         | Object
         | Role
@@ -84,8 +83,6 @@ if TYPE_CHECKING:
         | AppCommandThread
         | Thread
     )
-    T = TypeVar('T')
-    P = ParamSpec('P')
 
 
 class Message(NamedTuple):
@@ -145,7 +142,7 @@ class Button:
         - you should use Link instead of this if you want to send link.
     """
 
-    callback: MaybeAwaitableFunc[[Interaction[Client]], Result]
+    callback: MaybeAwaitableFunc[[Interaction], Result]
     label: str | None = None
     custom_id: str | None = None
     disabled: bool = False
@@ -172,7 +169,7 @@ class Select:
         - options is keyword only argument.
     """
 
-    callback: MaybeAwaitableFunc[[Interaction[Client], list[str]], Result]
+    callback: MaybeAwaitableFunc[[Interaction, list[str]], Result]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -186,7 +183,7 @@ class Select:
 class UserSelect:
     """discord.ui.UserSelect with callback for Message.items."""
 
-    callback: MaybeAwaitableFunc[[Interaction[Client], list[User | Member]], Result]
+    callback: MaybeAwaitableFunc[[Interaction, list[User | Member]], Result]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -200,7 +197,7 @@ class UserSelect:
 class RoleSelect:
     """discord.ui.RoleSelect with callback for Message.items."""
 
-    callback: MaybeAwaitableFunc[[Interaction[Client], list[Role]], Result]
+    callback: MaybeAwaitableFunc[[Interaction, list[Role]], Result]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -214,7 +211,7 @@ class RoleSelect:
 class MentionableSelect:
     """discord.ui.MentionableSelect with callback for Message.items."""
 
-    callback: MaybeAwaitableFunc[[Interaction[Client], list[User | Member | Role]], Result]
+    callback: MaybeAwaitableFunc[[Interaction, list[User | Member | Role]], Result]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -228,7 +225,7 @@ class MentionableSelect:
 class ChannelSelect:
     """discord.ui.ChannelSelect with callback for Message.items."""
 
-    callback: MaybeAwaitableFunc[[Interaction[Client], list[AppCommandChannel | AppCommandThread]], Result]
+    callback: MaybeAwaitableFunc[[Interaction, list[AppCommandChannel | AppCommandThread]], Result]
     placeholder: str | None = None
     custom_id: str | None = None
     min_values: int = 1
@@ -240,7 +237,7 @@ class ChannelSelect:
 
 
 if TYPE_CHECKING:
-    ItemType: TypeAlias = Button | Link | Select | UserSelect | RoleSelect | MentionableSelect | ChannelSelect
+    type ItemType = Button | Link | Select | UserSelect | RoleSelect | MentionableSelect | ChannelSelect
 
 
 class ModelBase:

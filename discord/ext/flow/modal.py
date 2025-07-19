@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from asyncio import Future, get_running_loop
+from asyncio import get_running_loop
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Self, TypedDict, TypeVarTuple, overload
+from typing import TYPE_CHECKING, TypedDict, overload
 
 from discord import TextStyle, ui
 from discord.utils import maybe_coroutine
@@ -11,29 +11,27 @@ from .controller import Controller, _get_controller
 from .external_task import ExternalTaskLifeTime
 
 if TYPE_CHECKING:
-    from typing import TypeAlias
+    from asyncio import Future
+    from typing import Self
 
-    import discord
-    from discord import Client
+    from discord import Interaction
     from discord.utils import MaybeAwaitableFunc
 
-    from .external_task import ExternalResultTask as ERT  # noqa: N817
+    from .external_task import ExternalResultTask
     from .result import Result
 
-    Ts = TypeVarTuple('Ts')
-    Interaction = discord.Interaction[Client]
-    CT1: TypeAlias = MaybeAwaitableFunc[[Interaction, tuple[str]], Result]
-    CT2: TypeAlias = MaybeAwaitableFunc[[Interaction, tuple[str, str]], Result]
-    CT3: TypeAlias = MaybeAwaitableFunc[[Interaction, tuple[str, str, str]], Result]
-    CT4: TypeAlias = MaybeAwaitableFunc[[Interaction, tuple[str, str, str, str]], Result]
-    CT5: TypeAlias = MaybeAwaitableFunc[[Interaction, tuple[str, str, str, str, str]], Result]
-    CT1to5: TypeAlias = CT1 | CT2 | CT3 | CT4 | CT5
-    TI1: TypeAlias = tuple['TextInput']
-    TI2: TypeAlias = tuple['TextInput', 'TextInput']
-    TI3: TypeAlias = tuple['TextInput', 'TextInput', 'TextInput']
-    TI4: TypeAlias = tuple['TextInput', 'TextInput', 'TextInput', 'TextInput']
-    TI5: TypeAlias = tuple['TextInput', 'TextInput', 'TextInput', 'TextInput', 'TextInput']
-    TI1To5: TypeAlias = TI1 | TI2 | TI3 | TI4 | TI5
+    type CT1 = MaybeAwaitableFunc[[Interaction, tuple[str]], Result]
+    type CT2 = MaybeAwaitableFunc[[Interaction, tuple[str, str]], Result]
+    type CT3 = MaybeAwaitableFunc[[Interaction, tuple[str, str, str]], Result]
+    type CT4 = MaybeAwaitableFunc[[Interaction, tuple[str, str, str, str]], Result]
+    type CT5 = MaybeAwaitableFunc[[Interaction, tuple[str, str, str, str, str]], Result]
+    type CT1To5 = CT1 | CT2 | CT3 | CT4 | CT5
+    type TI1 = tuple['TextInput']
+    type TI2 = tuple['TextInput', 'TextInput']
+    type TI3 = tuple['TextInput', 'TextInput', 'TextInput']
+    type TI4 = tuple['TextInput', 'TextInput', 'TextInput', 'TextInput']
+    type TI5 = tuple['TextInput', 'TextInput', 'TextInput', 'TextInput', 'TextInput']
+    type TI1To5 = TI1 | TI2 | TI3 | TI4 | TI5
 
 __all__ = ('ModalConfig', 'TextInput', 'send_modal')
 
@@ -83,7 +81,7 @@ class ModalConfigKWargs(TypedDict, total=False):
 class _InnerModal(ui.Modal):
     fut: Future[Result]
 
-    def __init__(self, config: ModalConfig, text_inputs: TI1To5, callback: CT1to5) -> None:
+    def __init__(self, config: ModalConfig, text_inputs: TI1To5, callback: CT1To5) -> None:
         kwargs: ModalConfigKWargs = {'title': config.title, 'timeout': config.timeout}
         if config.custom_id is not None:
             kwargs['custom_id'] = config.custom_id
@@ -127,7 +125,7 @@ async def send_modal(
     text_inputs: TI1,
     *,
     controller: Controller | None = None,
-) -> ERT: ...
+) -> ExternalResultTask: ...
 @overload
 async def send_modal(
     callback: CT2,
@@ -136,7 +134,7 @@ async def send_modal(
     text_inputs: TI2,
     *,
     controller: Controller | None = None,
-) -> ERT: ...
+) -> ExternalResultTask: ...
 @overload
 async def send_modal(
     callback: CT3,
@@ -145,7 +143,7 @@ async def send_modal(
     text_inputs: TI3,
     *,
     controller: Controller | None = None,
-) -> ERT: ...
+) -> ExternalResultTask: ...
 @overload
 async def send_modal(
     callback: CT4,
@@ -154,7 +152,7 @@ async def send_modal(
     text_inputs: TI4,
     *,
     controller: Controller | None = None,
-) -> ERT: ...
+) -> ExternalResultTask: ...
 @overload
 async def send_modal(
     callback: CT5,
@@ -163,17 +161,17 @@ async def send_modal(
     text_inputs: TI5,
     *,
     controller: Controller | None = None,
-) -> ERT: ...
+) -> ExternalResultTask: ...
 
 
 async def send_modal(
-    callback: CT1to5,
+    callback: CT1To5,
     interaction: Interaction,
     config: ModalConfig,
     text_inputs: TI1To5,
     *,
     controller: Controller | None = None,
-) -> ERT:
+) -> ExternalResultTask:
     """Send modal. call this function in any view item callback.
 
     Args:

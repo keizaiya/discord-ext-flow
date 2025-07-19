@@ -49,7 +49,7 @@ class Model(ModelBase):
         )
 
     def get_children(self, key: str) -> Button:
-        def children(_: Interaction[Client]) -> Result:
+        def children(_: Interaction) -> Result:
             return Result.next_model(model=Model(key))
 
         return Button(label=key, callback=children)
@@ -75,7 +75,7 @@ async def on_ready() -> None:
 
 
 @client.tree.command(name='tree')
-async def tree(interaction: Interaction[Client]) -> None:
+async def tree(interaction: Interaction) -> None:
     await Controller(Model('A')).invoke(interaction)
 
 

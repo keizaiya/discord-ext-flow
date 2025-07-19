@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from asyncio import Event, Task
+from asyncio import Event
 from contextlib import AsyncExitStack
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from logging import getLogger
 from typing import TYPE_CHECKING
 
@@ -14,10 +14,12 @@ from .util import exec_result, force_cancel_tasks, send_helper, wait_first_compl
 from .view import _View
 
 if TYPE_CHECKING:
+    from asyncio import Task
+    from contextvars import Token
     from types import TracebackType
     from typing import Self
 
-    from discord import Client, Interaction
+    from discord import Interaction
     from discord.abc import Messageable
     from discord.utils import MaybeAwaitableFunc
 
@@ -27,9 +29,8 @@ if TYPE_CHECKING:
 
 __all__ = ('Controller', 'create_external_result')
 
+
 logger = getLogger(__name__)
-
-
 controller_var = ContextVar['Controller | None'](f'{__name__}.controller_var', default=None)
 
 
@@ -100,7 +101,7 @@ class Controller:
         """
         return self.__class__(self.model)
 
-    async def invoke(self, messageable: Messageable | Interaction[Client], message: _Editable | None = None) -> None:
+    async def invoke(self, messageable: Messageable | Interaction, message: _Editable | None = None) -> None:
         """Invoke flow.
 
         Args:
@@ -153,9 +154,9 @@ class Controller:
     async def _send(
         self,
         model: ModelBase,
-        messageable: Messageable | Interaction[Client],
+        messageable: Messageable | Interaction,
         edit_target: _Editable | None,
-    ) -> tuple[ModelBase, Interaction[Client] | Messageable, _Editable] | None:
+    ) -> tuple[ModelBase, Interaction | Messageable, _Editable] | None:
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
 
@@ -193,7 +194,7 @@ class Controller:
         task.task.add_done_callback(done_callback)
         return task
 
-    async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+    async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction | Messageable] | None:
         tasks: set[ExternalResultTask] = set()
         try:
             while not view.is_finished():

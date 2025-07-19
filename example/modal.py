@@ -26,11 +26,11 @@ class EmbedModel(ModelBase):
         )
 
     def edit_title_button(self) -> Button:
-        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+        async def callback(interaction: Interaction, texts: tuple[str]) -> Result:
             self.embed.title = texts[0]
             return Result.send_message(message=self.message(), interaction=interaction)
 
-        async def inner(interaction: Interaction[Client]) -> Result:
+        async def inner(interaction: Interaction) -> Result:
             await send_modal(
                 callback,
                 interaction,
@@ -42,11 +42,11 @@ class EmbedModel(ModelBase):
         return Button(label='edit title', callback=inner)
 
     def edit_description_button(self) -> Button:
-        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+        async def callback(interaction: Interaction, texts: tuple[str]) -> Result:
             self.embed.description = texts[0]
             return Result.send_message(message=self.message(), interaction=interaction)
 
-        async def inner(interaction: Interaction[Client]) -> Result:
+        async def inner(interaction: Interaction) -> Result:
             await send_modal(
                 callback,
                 interaction,
@@ -58,12 +58,12 @@ class EmbedModel(ModelBase):
         return Button(label='edit description', callback=inner)
 
     def edit_title_and_description_button(self) -> Button:
-        async def callback(interaction: Interaction[Client], texts: tuple[str, str]) -> Result:
+        async def callback(interaction: Interaction, texts: tuple[str, str]) -> Result:
             self.embed.title = texts[0]
             self.embed.description = texts[1]
             return Result.send_message(message=self.message(), interaction=interaction)
 
-        async def inner(interaction: Interaction[Client]) -> Result:
+        async def inner(interaction: Interaction) -> Result:
             await send_modal(
                 callback,
                 interaction,
@@ -78,7 +78,7 @@ class EmbedModel(ModelBase):
         return Button(label='edit title and description', callback=inner)
 
     def finish_button(self) -> Button:
-        async def inner(_: Interaction[Client]) -> Result:
+        async def inner(_: Interaction) -> Result:
             return Result.send_message(message=Message(embeds=[self.embed]))
 
         return Button(label='finish', callback=inner)
@@ -104,7 +104,7 @@ async def on_ready() -> None:
 
 
 @client.tree.command(name='embed')
-async def embed(interaction: Interaction[Client], title: str) -> None:
+async def embed(interaction: Interaction, title: str) -> None:
     await Controller(EmbedModel(title)).invoke(interaction)
 
 

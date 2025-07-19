@@ -16,7 +16,7 @@ class StartModel(ModelBase):
         )
 
     def button(self, state: int) -> Button:
-        def inner(_: Interaction[Client]) -> Result:
+        def inner(_: Interaction) -> Result:
             return Result.next_model(model=SecondModel((state,)))
 
         return Button(label=f'{state + 1}', callback=inner, row=1)
@@ -36,11 +36,11 @@ class SecondModel(ModelBase):
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> Result:
+    def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=StartModel())
 
     def button(self, state: int) -> Button:
-        def inner(_: Interaction[Client]) -> Result:
+        def inner(_: Interaction) -> Result:
             return Result.next_model(model=ThirdModel((*self.status, state)))
 
         return Button(label=f'{state + 1}', callback=inner, row=1)
@@ -60,11 +60,11 @@ class ThirdModel(ModelBase):
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> Result:
+    def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=SecondModel(self.status[:-1]))
 
     def button(self, state: int) -> Button:
-        def inner(_: Interaction[Client]) -> Result:
+        def inner(_: Interaction) -> Result:
             return Result.next_model(model=FourthModel((*self.status, state)))
 
         return Button(label=f'{state + 1}', callback=inner, row=1)
@@ -84,11 +84,11 @@ class FourthModel(ModelBase):
             disable_items=True,
         )
 
-    def back_button(self, _: Interaction[Client]) -> Result:
+    def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=ThirdModel(self.status[:-1]))
 
     def button(self, state: int) -> Button:
-        def inner(_: Interaction[Client]) -> Result:
+        def inner(_: Interaction) -> Result:
             return Result.next_model(model=FinishModel((*self.status, state)))
 
         return Button(label=f'{state + 1}', callback=inner, row=1)
@@ -122,7 +122,7 @@ async def on_ready() -> None:
 
 
 @client.tree.command(name='basic')
-async def basic(interaction: Interaction[Client]) -> None:
+async def basic(interaction: Interaction) -> None:
     await Controller(StartModel()).invoke(interaction)
 
 

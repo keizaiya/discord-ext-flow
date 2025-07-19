@@ -26,7 +26,7 @@ class Pagination(ModelBase):
         )
 
     def button_callback(self, state: int) -> Button:
-        async def callback(interaction: Interaction[Client]) -> Result:
+        async def callback(interaction: Interaction) -> Result:
             print(state)
             await interaction.response.defer()
             return Result.finish_flow()
@@ -54,7 +54,7 @@ async def on_ready() -> None:
 
 
 @client.tree.command(name='basic')
-async def basic(interaction: Interaction[Client]) -> None:
+async def basic(interaction: Interaction) -> None:
     await Controller(Pagination(randint(1, 100))).invoke(interaction)
 
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from asyncio import Task, get_running_loop
+from asyncio import get_running_loop
 from enum import Enum
 from typing import TYPE_CHECKING
 
 from discord.utils import maybe_coroutine
 
 if TYPE_CHECKING:
+    from asyncio import Task
+
     from discord.utils import MaybeAwaitableFunc
 
     from .result import Result

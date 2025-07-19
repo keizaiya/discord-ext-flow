@@ -3,16 +3,16 @@ from __future__ import annotations
 from asyncio import FIRST_COMPLETED, gather, wait
 from typing import TYPE_CHECKING, NamedTuple, Protocol, TypedDict
 
-from discord import Interaction, Message
+from discord import Interaction
 
 from .result import _ResultTypeEnum
 
 if TYPE_CHECKING:
     from asyncio import Task
     from collections.abc import Callable, Iterable, Sequence
-    from typing import Any, Self, TypeVar
+    from typing import Any, Self
 
-    from discord import AllowedMentions, Attachment, Client, Embed, File
+    from discord import AllowedMentions, Attachment, Client, Embed, File, Message
     from discord.abc import Messageable
     from discord.ui import View
 
@@ -21,19 +21,15 @@ if TYPE_CHECKING:
     from .result import Result
     from .view import _View
 
-    T = TypeVar('T')
-    U = TypeVar('U')
-    V = TypeVar('V')
 
-
-def unwrap_or(value: T | None, default: U) -> T | U:
+def unwrap_or[T, U](value: T | None, default: U) -> T | U:
     """Return value if value is not None, otherwise return default."""
     if value is None:
         return default
     return value
 
 
-def map_or(value: T | None, default: U, func: Callable[[T], V]) -> V | U:
+def map_or[T, U, V](value: T | None, default: U, func: Callable[[T], V]) -> V | U:
     """Return func(value) if value is not None, otherwise return default."""
     if value is None:
         return default

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING
 
 from discord.utils import maybe_coroutine
 
@@ -10,19 +10,17 @@ from .result import Result, _ResultTypeEnum
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-    from typing import Any, ParamSpec
+    from typing import Any
 
-    from discord import Client, Interaction
+    from discord import Interaction
     from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
     from .model import ItemType
 
-    P = ParamSpec('P')
 
 __all__ = ('Paginator', 'paginator')
 
-T = TypeVar('T')
 
 FIRST_EMOJI = '\N{BLACK LEFT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f'
 PREVIOUS_EMOJI = '\N{BLACK LEFT-POINTING TRIANGLE}\ufe0f'
@@ -30,7 +28,7 @@ NEXT_EMOJI = '\N{BLACK RIGHT-POINTING TRIANGLE}\ufe0f'
 LAST_EMOJI = '\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f'
 
 
-class Paginator(Generic[T]):
+class Paginator[T]:
     """Paginator. This class is used to paginate messages.
 
     You should use `paginator` decorator and return this class instance.
@@ -102,7 +100,7 @@ class Paginator(Generic[T]):
 
         return msg._replace(items=tuple(items) + control_items, edit_original=edit_original or msg.edit_original)
 
-    def _finalize_modal(self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
+    def _finalize_modal[**P](self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
         async def finalize(*args: P.args, **kwargs: P.kwargs) -> Result:
             result = await maybe_coroutine(callback, *args, **kwargs)
             if (
@@ -125,16 +123,16 @@ class Paginator(Generic[T]):
         if 0 <= page_number < self.max_page:
             self.current_page = page_number
 
-    async def _go_to_first_page(self, _: Interaction[Client]) -> Result:
+    async def _go_to_first_page(self, _: Interaction) -> Result:
         self._set_page_number(0)
         return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_previous_page(self, _: Interaction[Client]) -> Result:
+    async def _go_to_previous_page(self, _: Interaction) -> Result:
         self._set_page_number(self.current_page - 1)
         return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_page(self, interaction: Interaction[Client]) -> Result:
-        async def callback(interaction: Interaction[Client], texts: tuple[str]) -> Result:
+    async def _go_to_page(self, interaction: Interaction) -> Result:
+        async def callback(interaction: Interaction, texts: tuple[str]) -> Result:
             assert len(texts) >= 1
             assert texts[0].isdigit()
             self._set_page_number(int(texts[0]) - 1)
@@ -151,16 +149,16 @@ class Paginator(Generic[T]):
 
         return Result.continue_flow()
 
-    async def _go_to_next_page(self, _: Interaction[Client]) -> Result:
+    async def _go_to_next_page(self, _: Interaction) -> Result:
         self._set_page_number(self.current_page + 1)
         return Result.send_message(message=await self._message(edit_original=True))
 
-    async def _go_to_last_page(self, _: Interaction[Client]) -> Result:
+    async def _go_to_last_page(self, _: Interaction) -> Result:
         self._set_page_number(self.max_page - 1)
         return Result.send_message(message=await self._message(edit_original=True))
 
 
-def paginator(func: MaybeAwaitableFunc[P, Paginator[Any]]) -> Callable[P, Awaitable[Message]]:
+def paginator[**P](func: MaybeAwaitableFunc[P, Paginator[Any]]) -> Callable[P, Awaitable[Message]]:
     """Decorator to paginate message. This decorator wraps function in ModelBase.message.
 
     Args:
