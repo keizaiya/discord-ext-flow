@@ -193,7 +193,7 @@ class _View(ui.View):
         self.fut = get_running_loop().create_future()
         return ret
 
-    def _cleanup_fut(self) -> None:
-        """Cleanup the future. Returns the old future."""
+    def _reset_fut(self) -> None:
+        """Resets the future if the current one is done."""
         if self.fut.done():
             self.fut = get_running_loop().create_future()
