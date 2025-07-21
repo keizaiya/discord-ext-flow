@@ -201,12 +201,17 @@ async def wait_first_completed_external_result_task(fs: Iterable[ExternalResultT
     return WaitResult(done_tasks, base_exceptions, exceptions, pending_tasks)
 
 
-async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+async def exec_result(
+    view: _View,
+    result: Result,
+    edit_target: _Editable,
+) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
     """Exec result.
 
     Args:
         view (_View): View to set result.
         result (Result): Result to exec.
+        edit_target (_Editable): Target to edit.
 
     Raises:
         ValueError: `result._interaction` is None.
@@ -229,7 +234,7 @@ async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interacti
             view.clear_items()
             view.set_items(msg.items or ())
             view._reset_fut()
-            await send_helper(messageable, msg, view, None)
+            await send_helper(messageable, msg, view, edit_target)
             if not msg.items:
                 view.stop()
             return None
