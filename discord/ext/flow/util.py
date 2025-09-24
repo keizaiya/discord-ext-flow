@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
     from typing import Any
 
-    from discord import AllowedMentions, Attachment, Client, Embed, File
+    from discord import AllowedMentions, Attachment, Embed, File
     from discord.abc import Messageable
     from discord.ui import View
 
@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from .model import Message as MessageData, MessageKwargs, ModelBase
     from .result import Result
     from .view import _View
+
+    type Sendable = Interaction | Messageable
 
 
 def unwrap_or[T, U](value: T | None, default: U) -> T | U:
@@ -110,10 +112,10 @@ def into_edit_kwargs(kwargs: MessageKwargs) -> _EditKWType:
 
 
 async def send_helper(
-    messageable: Messageable | Interaction[Client],
+    messageable: Sendable,
     message: MessageData,
     view: _View | None,
-    edit_target: _Editable | None,
+    edit: _Editable | None,
 ) -> _Editable:
     """Helper function to send message. use messageable or interaction."""
     kwargs = message._to_dict()
@@ -136,8 +138,8 @@ async def send_helper(
                 interaction_msg = await messageable.original_response()
                 msg = PartialMessage(channel=interaction_msg.channel, id=interaction_msg.id)
                 return msg  # type: ignore[reportReturnType, return-value]
-        if edit_target is not None:
-            return await edit_target.edit(**into_edit_kwargs(kwargs))
+        if edit is not None:
+            return await edit.edit(**into_edit_kwargs(kwargs))
         # fallback to send message
 
     # if send
@@ -211,11 +213,7 @@ async def wait_first_completed_external_result_task(fs: Iterable[ExternalResultT
     return WaitResult(done_tasks, base_exceptions, exceptions, pending_tasks)
 
 
-async def exec_result(
-    view: _View,
-    result: Result,
-    edit: _Editable,
-) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+async def exec_result(view: _View, result: Result, edit: _Editable) -> tuple[ModelBase, Sendable] | None:
     """Exec result.
 
     Args:
@@ -229,7 +227,7 @@ async def exec_result(
             and its response has not been acknowledged (e.g., `defer()` or `send_message()`).
 
     Returns:
-        tuple[ModelBase, Interaction[Client] | Messageable] | None: If the result indicates a model transition,
+        tuple[ModelBase, Interaction | Messageable] | None: If the result indicates a model transition,
             returns the new model and the messageable context. Otherwise, returns None.
     """
     if result._interaction is not None:

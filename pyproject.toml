@@ -24,7 +24,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.399",
+    "pyright>=1.1.399,<1.1.405",
     "mypy>=1.15.0",
     "ruff>=0.11.5",
     # .
@@ -153,6 +153,7 @@ convention = "google"
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 combine-as-imports = true
+known-third-party = ["discord"]
 
 # ruff formatter settings
 [tool.ruff.format]

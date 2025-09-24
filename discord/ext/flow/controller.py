@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from .result import Result
     from .util import _Editable
 
+    type Sendable = Interaction | Messageable
+
 __all__ = ('Controller', 'create_external_result')
 
 
@@ -101,11 +103,11 @@ class Controller:
         """
         return self.__class__(self.model)
 
-    async def invoke(self, messageable: Messageable | Interaction, message: _Editable | None = None) -> None:
+    async def invoke(self, messageable: Sendable, message: _Editable | None = None) -> None:
         """Invoke flow.
 
         Args:
-            messageable (Messageable | Interaction): Messageable or interaction to send first message.
+            messageable (Sendable): Messageable or interaction to send first message.
             message (discord.Message | None): The first target for editing if edit_original is True. Defaults to None.
         """
 
@@ -154,19 +156,19 @@ class Controller:
     async def _send(
         self,
         model: ModelBase,
-        messageable: Messageable | Interaction,
-        edit_target: _Editable | None,
-    ) -> tuple[ModelBase, Interaction | Messageable, _Editable] | None:
+        messageable: Sendable,
+        edit: _Editable | None,
+    ) -> tuple[ModelBase, Sendable, _Editable] | None:
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
 
         if msg.items is None:
-            await send_helper(messageable, msg, None, edit_target)
+            await send_helper(messageable, msg, None, edit)
             await maybe_coroutine(model.after_invoke)
             return None
 
         view = _View(config=await maybe_coroutine(model.view_config), items=msg.items, controller=self)
-        message = await send_helper(messageable, msg, view, edit_target)
+        message = await send_helper(messageable, msg, view, edit)
 
         self._get_view_wait_task(view)
         result = await self._wait_result(view, message)
@@ -194,7 +196,7 @@ class Controller:
         task.task.add_done_callback(done_callback)
         return task
 
-    async def _wait_result(self, view: _View, edit: _Editable) -> tuple[ModelBase, Interaction | Messageable] | None:
+    async def _wait_result(self, view: _View, edit: _Editable) -> tuple[ModelBase, Sendable] | None:
         tasks: set[ExternalResultTask] = set()
         try:
             while not view.is_finished():
