@@ -3,16 +3,16 @@ from __future__ import annotations
 from asyncio import FIRST_COMPLETED, gather, wait
 from typing import TYPE_CHECKING, NamedTuple, Protocol, TypedDict
 
-from discord import Interaction
+from discord import DiscordException, Interaction, PartialMessage
 
 from .result import _ResultTypeEnum
 
 if TYPE_CHECKING:
     from asyncio import Task
     from collections.abc import Callable, Iterable, Sequence
-    from typing import Any, Self
+    from typing import Any
 
-    from discord import AllowedMentions, Attachment, Client, Embed, File, Message
+    from discord import AllowedMentions, Attachment, Client, Embed, File
     from discord.abc import Messageable
     from discord.ui import View
 
@@ -47,8 +47,8 @@ class _Editable(Protocol):
         attachments: Sequence[Attachment | File] | None = None,
         view: View | None = None,
         allowed_mentions: AllowedMentions | None = None,
-    ) -> Self:
-        """Message.edit, InteractionMessage.edit or WebhookMessage.edit."""
+    ) -> _Editable:
+        """PartialMessage.edit, Message.edit or WebhookMessage.edit."""
         ...
 
 
@@ -119,19 +119,28 @@ async def send_helper(
     kwargs = message._to_dict()
     if view is not None:
         kwargs['view'] = view
+    msg: PartialMessage
 
     # if edit
     if message.edit_original:
-        if isinstance(messageable, Interaction) and not messageable.response.is_done():
-            if messageable.message is not None:  # Interaction.message is not None -> can edit
+        if (
+            isinstance(messageable, Interaction)
+            and not messageable.response.is_done()
+            and messageable.message is not None
+        ):  # Interaction.message is not None -> can edit
+            try:
                 await messageable.response.edit_message(**into_edit_kwargs(kwargs))
-                return await messageable.original_response()  # type: ignore[reportReturnType, return-value]
-        elif edit_target is not None:
+            except DiscordException:
+                pass  # ignore. and fallback.
+            else:
+                interaction_msg = await messageable.original_response()
+                msg = PartialMessage(channel=interaction_msg.channel, id=interaction_msg.id)
+                return msg  # type: ignore[reportReturnType, return-value]
+        if edit_target is not None:
             return await edit_target.edit(**into_edit_kwargs(kwargs))
         # fallback to send message
 
     # if send
-    msg: Message
     delete_after = kwargs.get('delete_after', None)
     ephemeral = kwargs.get('ephemeral', False)
     kwargs = into_send_kwargs(kwargs)
@@ -140,7 +149,8 @@ async def send_helper(
             msg = await messageable.followup.send(wait=True, ephemeral=ephemeral, **kwargs)
         else:
             await messageable.response.send_message(ephemeral=ephemeral, **kwargs)
-            msg = await messageable.original_response()
+            interaction_msg = await messageable.original_response()
+            msg = PartialMessage(channel=interaction_msg.channel, id=interaction_msg.id)
 
         if delete_after is not None:
             await msg.delete(delay=delete_after)
@@ -201,12 +211,17 @@ async def wait_first_completed_external_result_task(fs: Iterable[ExternalResultT
     return WaitResult(done_tasks, base_exceptions, exceptions, pending_tasks)
 
 
-async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
+async def exec_result(
+    view: _View,
+    result: Result,
+    edit: _Editable,
+) -> tuple[ModelBase, Interaction[Client] | Messageable] | None:
     """Exec result.
 
     Args:
         view (_View): View to set result.
         result (Result): Result to exec.
+        edit (_Editable): Target to edit.
 
     Raises:
         ValueError: `result._interaction` is None.
@@ -229,7 +244,7 @@ async def exec_result(view: _View, result: Result) -> tuple[ModelBase, Interacti
             view.clear_items()
             view.set_items(msg.items or ())
             view._reset_fut()
-            await send_helper(messageable, msg, view, None)
+            await send_helper(messageable, msg, view, edit)
             if not msg.items:
                 view.stop()
             return None

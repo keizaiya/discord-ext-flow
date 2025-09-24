@@ -169,7 +169,7 @@ class Controller:
         message = await send_helper(messageable, msg, view, edit_target)
 
         self._get_view_wait_task(view)
-        result = await self._wait_result(view)
+        result = await self._wait_result(view, message)
         assert view.is_finished()
         view.fut.cancel()
 
@@ -194,7 +194,7 @@ class Controller:
         task.task.add_done_callback(done_callback)
         return task
 
-    async def _wait_result(self, view: _View) -> tuple[ModelBase, Interaction | Messageable] | None:
+    async def _wait_result(self, view: _View, edit: _Editable) -> tuple[ModelBase, Interaction | Messageable] | None:
         tasks: set[ExternalResultTask] = set()
         try:
             while not view.is_finished():
@@ -217,7 +217,7 @@ class Controller:
 
                 for done in wait_result.done:
                     tasks.remove(done)
-                    ret = await exec_result(view, done.result())
+                    ret = await exec_result(view, done.result(), edit)
                     if ret is not None or view.is_finished():
                         return ret
 
