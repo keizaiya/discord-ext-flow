@@ -89,6 +89,8 @@ ignore = [
     "D100",
     # Ignore missing docstring in public package
     "D104",
+    # Ignore missing docstring in dunder method
+    "D105",
     # Ignore missing docstring in __init__
     "D107",
     # Allow use string/f-string/str.format

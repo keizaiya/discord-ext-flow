@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import reprlib
 from asyncio import get_running_loop
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -72,3 +73,7 @@ class ExternalResultTask:
             Result: task result.
         """
         return self.task.result()
+
+    @reprlib.recursive_repr()
+    def __repr__(self) -> str:
+        return f'<{self.__class__.__name__!s} task={self.task!r} lifetime={self._lifetime!s}>'
