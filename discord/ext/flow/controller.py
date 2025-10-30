@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import sys
 from asyncio import Event
-from contextlib import AsyncExitStack
+from contextlib import AbstractContextManager, AsyncExitStack
 from contextvars import ContextVar
 from logging import getLogger
 from typing import TYPE_CHECKING
@@ -44,6 +45,12 @@ def _get_controller() -> Controller:
 
 
 class _AutoResetControllerContext:
+    @classmethod
+    def from_token(cls, token: Token[Controller | None]) -> AbstractContextManager[Token[Controller | None], None]:
+        if sys.version_info >= (3, 14):
+            return token
+        return cls(token)
+
     def __init__(self, token: Token[Controller | None]) -> None:
         self.token = token
 
@@ -150,8 +157,8 @@ class Controller:
         self._external_task_event.set()
         return task
 
-    def _set_to_context(self) -> _AutoResetControllerContext:
-        return _AutoResetControllerContext(controller_var.set(self))
+    def _set_to_context(self) -> AbstractContextManager[Token[Controller | None], None]:
+        return _AutoResetControllerContext.from_token(controller_var.set(self))
 
     async def _send(
         self,
