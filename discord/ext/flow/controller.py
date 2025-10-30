@@ -43,7 +43,7 @@ def _get_controller() -> Controller:
     return controller
 
 
-class _AutoRestControllerContext:
+class _AutoResetControllerContext:
     def __init__(self, token: Token[Controller | None]) -> None:
         self.token = token
 
@@ -150,8 +150,8 @@ class Controller:
         self._external_task_event.set()
         return task
 
-    def _set_to_context(self) -> _AutoRestControllerContext:
-        return _AutoRestControllerContext(controller_var.set(self))
+    def _set_to_context(self) -> _AutoResetControllerContext:
+        return _AutoResetControllerContext(controller_var.set(self))
 
     async def _send(
         self,
