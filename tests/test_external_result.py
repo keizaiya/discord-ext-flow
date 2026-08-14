@@ -29,6 +29,7 @@ from discord.ext.flow.view import create_view
 
 if TYPE_CHECKING:
     from discord.ext.flow import ExternalResultTask
+    from discord.ext.flow.model import ViewConfig
     from discord.ext.flow.view import _ViewType
 
 
@@ -306,7 +307,8 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
         items=(Button(label='Initial').on(callback=_finish),),
         disable_items=True,
     )
-    initial_view = create_view({}, initial_config.items or (), controller)
+    view_config: ViewConfig = {'timeout': 42.0}
+    initial_view = create_view(view_config, initial_config.items or (), controller)
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=initial_message))
     await controller._send_message(_messageable(), initial_config, initial_view, None)
 
@@ -321,7 +323,6 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
     outcome = await controller._exec_result(
         initial_view,
         Result.send_message(replacement, interaction=interaction),
-        {},
     )
 
     assert outcome.switched_view
@@ -332,6 +333,8 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
     assert initial_view.is_finished()
     assert controller._active_message is not None
     assert controller._active_message.editable is interaction_message
+    assert controller._active_message.view is not None
+    assert controller._active_message.view.config is view_config
 
     await controller._finalize_active_message()
 
@@ -648,7 +651,7 @@ async def test_view_timeout_runs_completed_model_transition_before_finishing(
 
     monkeypatch.setattr(_ResultWaiter, 'wait', finish_wait)
 
-    transition = await controller._wait_result(initial_view, {})
+    transition = await controller._wait_result(initial_view)
 
     assert transition == (next_model, interaction)
     assert send_mock.await_count == 1
@@ -701,7 +704,7 @@ async def test_view_timeout_switches_to_completed_external_message_replacement(
         return await original_wait(waiter)
 
     monkeypatch.setattr(_ResultWaiter, 'wait', finish_initial_wait)
-    waiting = asyncio.create_task(controller._wait_result(initial_view, {}))
+    waiting = asyncio.create_task(controller._wait_result(initial_view))
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
     await asyncio.sleep(0)
 
@@ -731,9 +734,8 @@ async def test_continue_result_ignores_a_replaced_view_terminal_state(monkeypatc
     outcome = await controller._exec_result(
         initial_view,
         Result.send_message(replacement_message, interaction=interaction),
-        {},
     )
-    continue_outcome = await controller._exec_result(initial_view, continue_result, {})
+    continue_outcome = await controller._exec_result(initial_view, continue_result)
 
     assert outcome.switched_view
     assert initial_view.is_finished()

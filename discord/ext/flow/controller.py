@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from discord.abc import Messageable
     from discord.utils import MaybeAwaitableFunc
 
-    from .model import ModelBase, ViewConfig
+    from .model import ModelBase
     from .result import Result
     from .util import _Editable
 
@@ -317,7 +317,7 @@ class Controller:
         await self._send_message(messageable, msg, view, edit)
 
         if self.external_tasks or view_can_produce_result(view):
-            result = await self._wait_result(view, view_config)
+            result = await self._wait_result(view)
         else:
             view.stop()
             result = None
@@ -377,7 +377,7 @@ class Controller:
             self._stop_view(previous)
         return sent
 
-    async def _exec_result(self, view: _ViewType, result: Result, view_config: ViewConfig) -> _ResultOutcome:
+    async def _exec_result(self, view: _ViewType, result: Result) -> _ResultOutcome:
         if result._interaction is None:
             raise ValueError('result._interaction is None.')
         messageable = result._interaction
@@ -386,7 +386,7 @@ class Controller:
             case _ResultTypeEnum.MESSAGE:
                 assert result._message is not None
                 message = result._message
-                replacement = create_view(config=view_config, items=message.items or (), controller=self)
+                replacement = create_view(config=view.config, items=message.items or (), controller=self)
                 edit = None if self._active_message is None else self._active_message.editable
                 await self._send_message(messageable, message, replacement, edit)
                 return _ResultOutcome(switched_view=True)
@@ -414,7 +414,6 @@ class Controller:
     async def _wait_result(
         self,
         initial_view: _ViewType,
-        view_config: ViewConfig,
     ) -> tuple[ModelBase, Sendable] | None:
         view: _ViewType | None = initial_view
         while view is not None:
@@ -433,7 +432,7 @@ class Controller:
                     await self._handle_batch_errors(batch)
 
                     for completed in batch.results:
-                        outcome = await self._exec_result(view, completed.result, view_config)
+                        outcome = await self._exec_result(view, completed.result)
                         switched_view |= outcome.switched_view
                         if outcome.terminal:
                             return outcome.transition

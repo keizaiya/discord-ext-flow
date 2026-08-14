@@ -334,11 +334,6 @@ class _ViewLifecycleMixin:
         self.fut = get_running_loop().create_future()
         return ret
 
-    def _reset_fut(self) -> None:
-        """Reset the result future if the current one has completed."""
-        if self.fut.done():
-            self.fut = get_running_loop().create_future()
-
 
 class _View(_ViewLifecycleMixin, ui.View):
     def __init__(self, config: ViewConfig, items: Sequence[LegacyItemType], controller: Controller) -> None:
