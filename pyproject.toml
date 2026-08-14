@@ -20,14 +20,17 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
-    "discord.py>=2.5",
+    "discord.py>=2.7.1",
+    "typing_extensions >= 4.10; python_version < '3.13'", # for TypeIs
     # .
 ]
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.399,<1.1.405",
+    "pyright>=1.1.399",
     "mypy>=1.15.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
     "ruff>=0.11.5",
     # .
 ]
@@ -38,8 +41,9 @@ Source = "https://github.com/keizaiya/discord-ext-flow"
 # pyright settings
 [tool.pyright]
 typeCheckingMode = "strict"
-include = ["discord"]
-ignore = ["example"]
+include = ["discord", "tests", "example"]
+# Resolve local flow imports across the fragmented discord namespace.
+stubPath = "."
 
 reportGeneralTypeIssues = "warning"
 
@@ -85,6 +89,8 @@ select = [
     # .
 ]
 ignore = [
+    # Ignore missing copyright
+    "CPY",
     # Ignore missing docstring in public module
     "D100",
     # Ignore missing docstring in public package
@@ -166,6 +172,7 @@ quote-style = "single"
 # build settings
 [tool.pdm.build]
 includes = ["discord"]
+excludes = ["tests", "**/.*.swp"]
 
 [tool.pdm.version]
 source = "file"
