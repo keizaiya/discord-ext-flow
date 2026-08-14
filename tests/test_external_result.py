@@ -769,6 +769,53 @@ async def test_view_timeout_completes_controller_wait(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_view_timeout_during_external_error_handler_completes_controller_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout observed while handling an external error still completes the flow."""
+    sent = asyncio.Event()
+    error_started = asyncio.Event()
+    release_error = asyncio.Event()
+    captured_view: _ViewType | None = None
+
+    class WaitingErrorController(Controller):
+        async def on_error(self, _exception_group: BaseExceptionGroup) -> None:
+            error_started.set()
+            await release_error.wait()
+
+    class FailingModel(_InteractiveModel):
+        def __init__(self, controller: Controller) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def fail() -> Result:
+                raise RuntimeError('external task failed')
+
+            self.controller.create_external_result(fail)
+
+    async def send(_: object, __: object, view: _ViewType, ___: object) -> _Editable:
+        nonlocal captured_view
+        captured_view = view
+        sent.set()
+        return _sent()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = WaitingErrorController(_InteractiveModel())
+    model = FailingModel(controller)
+    controller.model = model
+    invoke = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    await asyncio.wait_for(error_started.wait(), timeout=0.1)
+
+    assert captured_view is not None
+    captured_view._dispatch_timeout()  # type: ignore[no-untyped-call]
+    release_error.set()
+    await asyncio.wait_for(invoke, timeout=0.1)
+
+    assert captured_view.is_finished()
+
+
+@pytest.mark.asyncio
 async def test_modal_timeout_releases_its_external_result(monkeypatch: pytest.MonkeyPatch) -> None:
     """A timed-out modal does not keep a static flow waiting indefinitely."""
 

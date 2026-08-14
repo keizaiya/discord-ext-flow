@@ -444,6 +444,8 @@ class Controller:
 
                     if batch.view_finished:
                         return None
+            if view is not None and view.is_finished():
+                return None
         return None
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
