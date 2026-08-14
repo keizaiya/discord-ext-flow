@@ -122,63 +122,12 @@ type RoleSelectCallback = Callable[[Interaction, list[Role]], MaybeAwaitable[Res
 type MentionableSelectCallback = Callable[[Interaction, list[User | Member | Role]], MaybeAwaitable[Result]]
 type ChannelSelectCallback = Callable[[Interaction, list[AppCommandChannel | AppCommandThread]], MaybeAwaitable[Result]]
 
-type TextInputValue = str
-type SelectValue = list[str]
-type UserSelectValue = list[Member | User | str]
-type RoleSelectValue = list[Role | str]
-type MentionableSelectValue = list[Member | User | Role | str]
-type ChannelSelectValue = list[AppCommandChannel | AppCommandThread | str]
-type FileUploadValue = list[Attachment]
-type RadioGroupValue = str | None
-type CheckboxGroupValue = list[str]
-type CheckboxValue = bool
-type ModalValue = (
-    TextInputValue
-    | SelectValue
-    | UserSelectValue
-    | RoleSelectValue
-    | MentionableSelectValue
-    | ChannelSelectValue
-    | FileUploadValue
-    | RadioGroupValue
-    | CheckboxGroupValue
-    | CheckboxValue
-)
-
 
 class InteractiveItem[ItemT, CallbackT](NamedTuple):
     """A component config explicitly bound to a flow callback."""
 
     item: ItemT
     callback: CallbackT
-
-
-@dataclass
-class ModalItem[ConfigT, ValueT]:
-    """A modal input config bound to the value populated by one modal submission."""
-
-    item: ConfigT
-    _ui_item: ui.Item[BaseView] | None = field(default=None, init=False, repr=False)
-    _submitted: bool = field(default=False, init=False, repr=False)
-
-    @property
-    def value(self) -> ValueT:
-        """Return the submitted value, or fail if the modal has not been submitted."""
-        if not self._submitted:
-            raise RuntimeError('Modal item has not been submitted.')
-        if self._ui_item is None:
-            raise RuntimeError('Modal item is not bound to a modal.')
-        return _modal_value(self._ui_item)  # type: ignore[return-value, reportReturnType]
-
-    def _bind(self, item: ui.Item[BaseView]) -> None:
-        if self._ui_item is not None:
-            raise ValueError('Modal item instances cannot be reused.')
-        self._ui_item = item
-
-    def _mark_submitted(self) -> None:
-        if self._ui_item is None:
-            raise RuntimeError('Modal item is not bound to a modal.')
-        self._submitted = True
 
 
 @dataclass
@@ -336,6 +285,61 @@ class ChannelSelect:
         return ModalItem(item=self)
 
 
+type InteractiveButton = InteractiveItem[Button, ButtonCallback]
+type InteractiveSelect = InteractiveItem[Select, SelectCallback]
+type InteractiveUserSelect = InteractiveItem[UserSelect, UserSelectCallback]
+type InteractiveRoleSelect = InteractiveItem[RoleSelect, RoleSelectCallback]
+type InteractiveMentionableSelect = InteractiveItem[MentionableSelect, MentionableSelectCallback]
+type InteractiveChannelSelect = InteractiveItem[ChannelSelect, ChannelSelectCallback]
+
+
+@dataclass
+class ModalItem[ConfigT, ValueT]:
+    """A modal input config bound to the value populated by one modal submission."""
+
+    item: ConfigT
+    _ui_item: ui.Item[BaseView] | None = field(default=None, init=False, repr=False)
+    _submitted: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def value(self) -> ValueT:
+        """Return the submitted value, or fail if the modal has not been submitted."""
+        if not self._submitted:
+            raise RuntimeError('Modal item has not been submitted.')
+        if self._ui_item is None:
+            raise RuntimeError('Modal item is not bound to a modal.')
+        return _modal_value(self._ui_item)  # type: ignore[return-value, reportReturnType]
+
+    def _bind(self, item: ui.Item[BaseView]) -> None:
+        if self._ui_item is not None:
+            raise ValueError('Modal item instances cannot be reused.')
+        self._ui_item = item
+
+    def _mark_submitted(self) -> None:
+        if self._ui_item is None:
+            raise RuntimeError('Modal item is not bound to a modal.')
+        self._submitted = True
+
+
+def _modal_value(item: ui.Item[BaseView]) -> object:
+    if isinstance(item, (ui.TextInput, ui.RadioGroup, ui.Checkbox)):
+        return item.value
+    if isinstance(
+        item,
+        (
+            ui.Select,
+            ui.UserSelect,
+            ui.RoleSelect,
+            ui.MentionableSelect,
+            ui.ChannelSelect,
+            ui.FileUpload,
+            ui.CheckboxGroup,
+        ),
+    ):
+        return item.values
+    raise TypeError(f'{type(item).__name__} is not a valid modal input.')
+
+
 @dataclass
 class TextInput:
     """discord.ui.TextInput for a modal Label or the legacy top level."""
@@ -414,13 +418,39 @@ class Checkbox:
         return ModalItem(item=self)
 
 
-type InteractiveButton = InteractiveItem[Button, ButtonCallback]
-type InteractiveSelect = InteractiveItem[Select, SelectCallback]
-type InteractiveUserSelect = InteractiveItem[UserSelect, UserSelectCallback]
-type InteractiveRoleSelect = InteractiveItem[RoleSelect, RoleSelectCallback]
-type InteractiveMentionableSelect = InteractiveItem[MentionableSelect, MentionableSelectCallback]
-type InteractiveChannelSelect = InteractiveItem[ChannelSelect, ChannelSelectCallback]
+@dataclass
+class Label:
+    """discord.ui.Label containing one formal modal input."""
 
+    text: str
+    component: ModalInputItem
+    description: str | None = None
+    id: int | None = None
+    row: int | None = None
+
+
+type TextInputValue = str
+type SelectValue = list[str]
+type UserSelectValue = list[Member | User | str]
+type RoleSelectValue = list[Role | str]
+type MentionableSelectValue = list[Member | User | Role | str]
+type ChannelSelectValue = list[AppCommandChannel | AppCommandThread | str]
+type FileUploadValue = list[Attachment]
+type RadioGroupValue = str | None
+type CheckboxGroupValue = list[str]
+type CheckboxValue = bool
+type ModalValue = (
+    TextInputValue
+    | SelectValue
+    | UserSelectValue
+    | RoleSelectValue
+    | MentionableSelectValue
+    | ChannelSelectValue
+    | FileUploadValue
+    | RadioGroupValue
+    | CheckboxGroupValue
+    | CheckboxValue
+)
 type ModalInputType = (
     TextInput
     | Select
@@ -445,17 +475,7 @@ type ModalInputItem = (
     | ModalItem[CheckboxGroup, CheckboxGroupValue]
     | ModalItem[Checkbox, CheckboxValue]
 )
-
-
-@dataclass
-class Label:
-    """discord.ui.Label containing one formal modal input."""
-
-    text: str
-    component: ModalInputItem
-    description: str | None = None
-    id: int | None = None
-    row: int | None = None
+type ModalItemType = Label | TextDisplay | ModalItem[TextInput, TextInputValue]
 
 
 @dataclass
@@ -464,9 +484,6 @@ class TextDisplay:
 
     content: str
     id: int | None = None
-
-
-type ModalItemType = Label | TextDisplay | ModalItem[TextInput, TextInputValue]
 
 
 @dataclass
@@ -566,22 +583,3 @@ if TYPE_CHECKING:
     type V2ItemType = ActionRow | Section | TextDisplay | MediaGallery | File | Separator | Container
     type CreateItemType = LegacyItemType | V2ItemType
     type ItemType = CreateItemType
-
-
-def _modal_value(item: ui.Item[BaseView]) -> object:
-    if isinstance(item, (ui.TextInput, ui.RadioGroup, ui.Checkbox)):
-        return item.value
-    if isinstance(
-        item,
-        (
-            ui.Select,
-            ui.UserSelect,
-            ui.RoleSelect,
-            ui.MentionableSelect,
-            ui.ChannelSelect,
-            ui.FileUpload,
-            ui.CheckboxGroup,
-        ),
-    ):
-        return item.values
-    raise TypeError(f'{type(item).__name__} is not a valid modal input.')
