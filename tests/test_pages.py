@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeGuard
+from unittest.mock import MagicMock
 
 import pytest
+from discord import Interaction, ui
 from discord.ext.flow import (
     ActionRow,
     Button,
     ComponentV2Message,
     ComponentV2Paginator,
     Container,
+    ExternalResultTask,
+    InteractiveItem,
     LegacyMessage,
+    ModalCallback,
+    ModalConfig,
+    ModalItemType,
     ModelBase,
     Paginator,
     PaginatorControls,
@@ -19,23 +26,26 @@ from discord.ext.flow import (
     paginator,
 )
 from discord.ext.flow.controller import Controller
+from discord.ext.flow.modal import _InnerModal
 from discord.ext.flow.pages import NEXT_EMOJI
 from discord.ext.flow.view import create_view
 from discord.utils import maybe_coroutine
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Sequence
 
-    from discord import Interaction
-    from discord.ext.flow import ExternalResultTask
+    from discord.ext.flow import ActionRowItemType, InteractiveButton
 
 
 def _finish(_: Interaction) -> Result:
     return Result.finish_flow()
 
 
-class _ModalTask:
+class _ModalTask(ExternalResultTask):
     cancelled = False
+
+    def __init__(self) -> None:
+        self.cancelled = False
 
     def done(self) -> bool:
         return False
@@ -49,6 +59,14 @@ class _Model(ModelBase):
         return LegacyMessage()
 
 
+def _interaction() -> Interaction:
+    return MagicMock(spec=Interaction)
+
+
+def _is_interactive_button(item: ActionRowItemType) -> TypeGuard[InteractiveButton]:
+    return isinstance(item, InteractiveItem) and isinstance(item.item, Button)
+
+
 @pytest.mark.asyncio
 async def test_legacy_paginator_retains_page_and_row_behavior() -> None:
     """The shared paginator internals preserve the existing legacy API and layout."""
@@ -56,7 +74,7 @@ async def test_legacy_paginator_retains_page_and_row_behavior() -> None:
 
     def builder(values: tuple[int, ...], current_page: int, max_page: int) -> LegacyMessage:
         calls.append((values, current_page, max_page))
-        return LegacyMessage(content='page', items=(Button(label='Finish', callback=_finish),))
+        return LegacyMessage(content='page', items=(Button(label='Finish').on(callback=_finish),))
 
     pagination = Paginator(builder, values=range(12), per_page=5, start_page=1, row=3)
     message = await pagination._message()
@@ -66,9 +84,12 @@ async def test_legacy_paginator_retains_page_and_row_behavior() -> None:
     assert message.items is not None
     assert len(message.items) == 6
     controls = message.items[1:]
-    assert all(isinstance(item, Button) and item.row == 3 for item in controls)
-    assert isinstance(controls[2], Button)
-    assert controls[2].label == '2/3'
+    assert all(
+        isinstance(item, InteractiveItem) and isinstance(item.item, Button) and item.item.row == 3 for item in controls
+    )
+    assert isinstance(controls[2], InteractiveItem)
+    assert isinstance(controls[2].item, Button)
+    assert controls[2].item.label == '2/3'
 
 
 @pytest.mark.asyncio
@@ -99,21 +120,30 @@ async def test_component_v2_paginator_places_controls_in_container_and_changes_p
     row = container.items[1]
     assert isinstance(row, ActionRow)
     first, previous, page, next_button, last = row.items
-    assert all(isinstance(item, Button) and item.row is None for item in row.items)
-    assert isinstance(first, Button)
-    assert first.disabled
-    assert isinstance(previous, Button)
-    assert previous.disabled
-    assert isinstance(page, Button)
-    assert page.label == '1/3'
-    assert not page.disabled
-    assert isinstance(next_button, Button)
-    assert next_button.emoji == NEXT_EMOJI
-    assert not next_button.disabled
-    assert isinstance(last, Button)
-    assert not last.disabled
+    assert all(
+        isinstance(item, InteractiveItem) and isinstance(item.item, Button) and item.item.row is None
+        for item in row.items
+    )
+    assert isinstance(first, InteractiveItem)
+    assert isinstance(first.item, Button)
+    assert first.item.disabled
+    assert isinstance(previous, InteractiveItem)
+    assert isinstance(previous.item, Button)
+    assert previous.item.disabled
+    assert isinstance(page, InteractiveItem)
+    assert isinstance(page.item, Button)
+    assert page.item.label == '1/3'
+    assert not page.item.disabled
+    assert isinstance(next_button, InteractiveItem)
+    assert isinstance(next_button.item, Button)
+    assert next_button.item.emoji == NEXT_EMOJI
+    assert not next_button.item.disabled
+    assert isinstance(last, InteractiveItem)
+    assert isinstance(last.item, Button)
+    assert not last.item.disabled
 
-    result = await maybe_coroutine(next_button.callback, cast('Interaction', object()))
+    assert _is_interactive_button(next_button)
+    result = await maybe_coroutine(next_button.callback, _interaction())
 
     assert calls == [((0, 1, 2, 3, 4), 0, 3), ((5, 6, 7, 8, 9), 1, 3)]
     assert isinstance(result._message, ComponentV2Message)
@@ -139,10 +169,17 @@ async def test_component_v2_paginator_controls_can_be_split_and_reordered() -> N
     assert isinstance(first_row, ActionRow)
     assert isinstance(section, Section)
     assert isinstance(last_row, ActionRow)
-    assert [cast('Button', item).emoji for item in first_row.items] == ['◀️', '⏮️']
-    assert isinstance(section.accessory, Button)
-    assert section.accessory.label == '1/2'
-    assert [cast('Button', item).emoji for item in last_row.items] == ['⏭️', '▶️']
+    first, previous = first_row.items
+    assert _is_interactive_button(first)
+    assert _is_interactive_button(previous)
+    assert [first.item.emoji, previous.item.emoji] == ['◀️', '⏮️']
+    assert isinstance(section.accessory, InteractiveItem)
+    assert isinstance(section.accessory.item, Button)
+    assert section.accessory.item.label == '1/2'
+    last, next_button = last_row.items
+    assert _is_interactive_button(last)
+    assert _is_interactive_button(next_button)
+    assert [last.item.emoji, next_button.item.emoji] == ['⏭️', '▶️']
 
 
 @pytest.mark.asyncio
@@ -150,16 +187,18 @@ async def test_component_v2_paginator_page_modal_edits_selected_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The direct-page control keeps the existing modal-based navigation behavior."""
-    callback: Callable[[Interaction, tuple[str]], Awaitable[Result]] | None = None
+    captured: tuple[ModalCallback, ModalConfig, Sequence[ModalItemType]] | None = None
     task = _ModalTask()
 
     async def fake_send_modal(
-        modal_callback: Callable[[Interaction, tuple[str]], Awaitable[Result]],
-        *_: object,
+        modal_callback: ModalCallback,
+        _: Interaction,
+        config: ModalConfig,
+        items: Sequence[ModalItemType],
         **__: object,
     ) -> _ModalTask:
-        nonlocal callback
-        callback = modal_callback
+        nonlocal captured
+        captured = (modal_callback, config, items)
         return task
 
     monkeypatch.setattr('discord.ext.flow.pages.send_modal', fake_send_modal)
@@ -172,14 +211,26 @@ async def test_component_v2_paginator_page_modal_edits_selected_page(
     row = message.items[1]
     assert isinstance(row, ActionRow)
     page = row.items[2]
-    assert isinstance(page, Button)
-    interaction = cast('Interaction', object())
+    assert isinstance(page, InteractiveItem)
+    assert isinstance(page.item, Button)
+    assert _is_interactive_button(page)
+    interaction = _interaction()
 
     result = await maybe_coroutine(page.callback, interaction)
 
     assert result == Result.continue_flow()
-    assert callback is not None
-    selected = await callback(interaction, ('2',))
+    assert captured is not None
+    callback, config, items = captured
+    submitted = _InnerModal(config, items, callback)
+    label = submitted.children[0]
+    assert isinstance(label, ui.Label)
+    assert isinstance(label.component, ui.TextInput)
+    await submitted._scheduled_task(
+        interaction,
+        [{'type': 18, 'component': {'type': 4, 'custom_id': label.component.custom_id, 'value': '2'}}],
+        {},
+    )
+    selected = await submitted._wait()
     assert pagination.current_page == 1
     assert isinstance(selected._message, ComponentV2Message)
     assert selected._message.edit_original
@@ -196,7 +247,7 @@ async def test_nested_v2_callback_cancels_paginator_modal_tasks() -> None:
             items=(
                 Container(
                     items=(
-                        ActionRow(items=(Button(label='Finish', callback=_finish),)),
+                        ActionRow(items=(Button(label='Finish').on(callback=_finish),)),
                         ActionRow(items=controls),
                     ),
                 ),
@@ -204,16 +255,18 @@ async def test_nested_v2_callback_cancels_paginator_modal_tasks() -> None:
         )
 
     pagination = ComponentV2Paginator(builder, values=(1,))
-    pagination.modal_tasks.append(cast('ExternalResultTask', task))
+    pagination.modal_tasks.append(task)
     message = await pagination._message()
     container = message.items[0]
     assert isinstance(container, Container)
     row = container.items[0]
     assert isinstance(row, ActionRow)
     finish = row.items[0]
-    assert isinstance(finish, Button)
+    assert isinstance(finish, InteractiveItem)
+    assert isinstance(finish.item, Button)
 
-    await maybe_coroutine(finish.callback, cast('Interaction', object()))
+    assert _is_interactive_button(finish)
+    await maybe_coroutine(finish.callback, _interaction())
 
     assert task.cancelled
 
@@ -229,20 +282,22 @@ async def test_static_v2_callback_cancels_paginator_modal_tasks() -> None:
     def builder(_: tuple[int, ...], __: int, ___: int, controls: PaginatorControls) -> ComponentV2Message:
         return ComponentV2Message(
             items=(
-                ActionRow(items=(Button(label='Finish', callback=show_static),)),
+                ActionRow(items=(Button(label='Finish').on(callback=show_static),)),
                 ActionRow(items=controls),
             ),
         )
 
     pagination = ComponentV2Paginator(builder, values=(1,))
-    pagination.modal_tasks.append(cast('ExternalResultTask', task))
+    pagination.modal_tasks.append(task)
     message = await pagination._message()
     row = message.items[0]
     assert isinstance(row, ActionRow)
     finish = row.items[0]
-    assert isinstance(finish, Button)
+    assert isinstance(finish, InteractiveItem)
+    assert isinstance(finish.item, Button)
 
-    await maybe_coroutine(finish.callback, cast('Interaction', object()))
+    assert _is_interactive_button(finish)
+    await maybe_coroutine(finish.callback, _interaction())
 
     assert task.cancelled
 
@@ -254,26 +309,30 @@ async def test_disabled_v2_callback_cancels_paginator_modal_tasks() -> None:
 
     def show_disabled(_: Interaction) -> Result:
         return Result.send_message(
-            ComponentV2Message(items=(ActionRow(items=(Button(label='Disabled', callback=_finish, disabled=True),)),))
+            ComponentV2Message(
+                items=(ActionRow(items=(Button(label='Disabled', disabled=True).on(callback=_finish),)),)
+            )
         )
 
     def builder(_: tuple[int, ...], __: int, ___: int, controls: PaginatorControls) -> ComponentV2Message:
         return ComponentV2Message(
             items=(
-                ActionRow(items=(Button(label='Finish', callback=show_disabled),)),
+                ActionRow(items=(Button(label='Finish').on(callback=show_disabled),)),
                 ActionRow(items=controls),
             ),
         )
 
     pagination = ComponentV2Paginator(builder, values=(1,))
-    pagination.modal_tasks.append(cast('ExternalResultTask', task))
+    pagination.modal_tasks.append(task)
     message = await pagination._message()
     row = message.items[0]
     assert isinstance(row, ActionRow)
     finish = row.items[0]
-    assert isinstance(finish, Button)
+    assert isinstance(finish, InteractiveItem)
+    assert isinstance(finish.item, Button)
 
-    await maybe_coroutine(finish.callback, cast('Interaction', object()))
+    assert _is_interactive_button(finish)
+    await maybe_coroutine(finish.callback, _interaction())
 
     assert task.cancelled
 
@@ -289,7 +348,7 @@ async def test_disabled_section_callback_cancels_paginator_modal_tasks() -> None
                 items=(
                     Section(
                         items=('Finished',),
-                        accessory=Button(label='Disabled', callback=_finish, disabled=True),
+                        accessory=Button(label='Disabled', disabled=True).on(callback=_finish),
                     ),
                 )
             )
@@ -298,20 +357,22 @@ async def test_disabled_section_callback_cancels_paginator_modal_tasks() -> None
     def builder(_: tuple[int, ...], __: int, ___: int, controls: PaginatorControls) -> ComponentV2Message:
         return ComponentV2Message(
             items=(
-                ActionRow(items=(Button(label='Finish', callback=show_disabled),)),
+                ActionRow(items=(Button(label='Finish').on(callback=show_disabled),)),
                 ActionRow(items=controls),
             ),
         )
 
     pagination = ComponentV2Paginator(builder, values=(1,))
-    pagination.modal_tasks.append(cast('ExternalResultTask', task))
+    pagination.modal_tasks.append(task)
     message = await pagination._message()
     row = message.items[0]
     assert isinstance(row, ActionRow)
     finish = row.items[0]
-    assert isinstance(finish, Button)
+    assert isinstance(finish, InteractiveItem)
+    assert isinstance(finish.item, Button)
 
-    await maybe_coroutine(finish.callback, cast('Interaction', object()))
+    assert _is_interactive_button(finish)
+    await maybe_coroutine(finish.callback, _interaction())
 
     assert task.cancelled
 
@@ -350,3 +411,17 @@ async def test_paginator_decorator_supports_both_message_modes() -> None:
     component_v2_message = await component_v2()
     assert type(legacy_message) is LegacyMessage
     assert type(component_v2_message) is ComponentV2Message
+
+
+@pytest.mark.asyncio
+async def test_paginator_decorator_preserves_invalid_builder_attribute_error() -> None:
+    """The public decorator keeps its historical dynamic-dispatch failure for invalid builder results."""
+
+    def invalid_builder() -> object:
+        return object()
+
+    # The public overload rejects this deliberately invalid runtime input.
+    wrapped = paginator(invalid_builder)  # type: ignore[arg-type, call-overload, reportUnknownVariableType]
+
+    with pytest.raises(AttributeError, match='_message'):
+        await wrapped()  # type: ignore[no-untyped-call]

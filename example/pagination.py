@@ -5,7 +5,7 @@ from random import randint
 
 from discord import Client, Embed, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Paginator, Result, paginator
+from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Paginator, Result, paginator
 
 
 class Pagination(ModelBase):
@@ -25,13 +25,13 @@ class Pagination(ModelBase):
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Button:
+    def button_callback(self, state: int) -> InteractiveButton:
         async def callback(interaction: Interaction) -> Result:
             print(state)
             await interaction.response.defer()
             return Result.finish_flow()
 
-        return Button(label=str(state), callback=callback)
+        return Button(label=str(state)).on(callback=callback)
 
 
 class MyClient(Client):

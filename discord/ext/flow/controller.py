@@ -13,13 +13,8 @@ from discord.utils import maybe_coroutine
 
 from .external_task import ExternalResultTask, ExternalTaskLifeTime
 from .model import ComponentV2Message, Message
-from .result import Result
-from .util import (
-    exec_result,
-    force_cancel_tasks,
-    send_helper,
-    view_can_produce_result,
-)
+from .result import Result, _ResultTypeEnum
+from .util import force_cancel_tasks, send_helper, view_can_produce_result
 from .view import _ViewType, create_view
 
 if TYPE_CHECKING:
@@ -33,7 +28,7 @@ if TYPE_CHECKING:
     from discord.abc import Messageable
     from discord.utils import MaybeAwaitableFunc
 
-    from .model import ModelBase
+    from .model import ModelBase, ViewConfig
     from .result import Result
     from .util import _Editable
 
@@ -81,6 +76,18 @@ class _ResultBatch(NamedTuple):
     base_exceptions: tuple[BaseException, ...] = ()
     view_finished: bool = False
     exhausted: bool = False
+
+
+class _ActiveMessage(NamedTuple):
+    message: ComponentV2Message | Message
+    view: _ViewType | None
+    editable: _Editable
+
+
+class _ResultOutcome(NamedTuple):
+    transition: tuple[ModelBase, Sendable] | None = None
+    switched_view: bool = False
+    terminal: bool = False
 
 
 class _ResultWaiter:
@@ -174,15 +181,14 @@ class _ResultWaiter:
             wait_for.add(self.view_result_task)
         await wait(wait_for, return_when=FIRST_COMPLETED)
 
-        if self.view_finished_task.done():
-            return _ResultBatch(iter(()), view_finished=True)
-
+        view_finished = self.view_finished_task.done()
+        await self._take_registered_tasks()
         batch = self._collect_external_results()
         if self.view_result_task is not None and self.view_result_task.done():
-            results = chain(batch.results, (_CompletedResult(self.view_result_task.result(), source=None),))
+            results = chain((_CompletedResult(self.view_result_task.result(), source=None),), batch.results)
             self.view_result_task = None
-            return _ResultBatch(results, batch.exceptions, batch.base_exceptions)
-        return batch
+            return _ResultBatch(results, batch.exceptions, batch.base_exceptions, view_finished=view_finished)
+        return _ResultBatch(batch.results, batch.exceptions, batch.base_exceptions, view_finished=view_finished)
 
     def _external_task_handles(self) -> set[Task[Result]]:
         return {task.task for task in self.external_tasks}
@@ -223,11 +229,13 @@ class Controller:
     model: ModelBase
     external_tasks: set[ExternalResultTask]
     _external_task_event: Event
+    _active_message: _ActiveMessage | None
 
     def __init__(self, initial_model: ModelBase) -> None:
         self.model = initial_model
         self.external_tasks = set()
         self._external_task_event = Event()
+        self._active_message = None
 
     def copy(self) -> Self:
         """Returns a copy of this controller.
@@ -248,6 +256,7 @@ class Controller:
         async def cleanup(_c: type[BaseException] | None, _e: BaseException | None, _t: TracebackType | None) -> None:
             await force_cancel_tasks(t.task for t in self.external_tasks)
             self.external_tasks.clear()
+            await self._finalize_active_message()
 
         async with AsyncExitStack() as st:
             st.enter_context(self._set_to_context())
@@ -299,58 +308,142 @@ class Controller:
             raise TypeError('ModelBase.message must return ComponentV2Message or LegacyMessage.')
 
         if msg.items is None:
-            await send_helper(messageable, msg, None, edit)
+            await self._send_message(messageable, msg, None, edit)
             await maybe_coroutine(model.after_invoke)
             return None
 
-        view = create_view(config=await maybe_coroutine(model.view_config), items=msg.items, controller=self)
-        message = await send_helper(messageable, msg, view, edit)
+        view_config = await maybe_coroutine(model.view_config)
+        view = create_view(config=view_config, items=msg.items, controller=self)
+        await self._send_message(messageable, msg, view, edit)
 
         if self.external_tasks or view_can_produce_result(view):
-            result = await self._wait_result(view, message)
+            result = await self._wait_result(view, view_config)
         else:
             view.stop()
             result = None
         assert view.is_finished()
         view.fut.cancel()
 
-        if msg.disable_items:
-            for child in view.walk_children():
-                if isinstance(
-                    child,
-                    (ui.Button, ui.ChannelSelect, ui.MentionableSelect, ui.RoleSelect, ui.Select, ui.UserSelect),
-                ):
-                    child.disabled = True
-            await message.edit(view=view)
-
         await maybe_coroutine(model.after_invoke)
 
-        return None if result is None else (*result, message)
+        if result is None:
+            return None
+        assert self._active_message is not None
+        return (*result, self._active_message.editable)
 
-    async def _wait_result(self, view: _ViewType, edit: _Editable) -> tuple[ModelBase, Sendable] | None:
-        async with _ResultWaiter(self, view) as waiter:
-            while not view.is_finished():
-                batch = await waiter.wait()
-                if batch.view_finished:
-                    return None
-                if batch.exhausted:  # if anyone cannot provide any results
+    async def _disable_items(self, active: _ActiveMessage | None) -> None:
+        if active is None or not active.message.disable_items or active.view is None:
+            return
+        for child in active.view.walk_children():
+            if isinstance(
+                child,
+                (ui.Button, ui.ChannelSelect, ui.MentionableSelect, ui.RoleSelect, ui.Select, ui.UserSelect),
+            ):
+                child.disabled = True
+        await active.editable.edit(view=active.view)
+
+    @staticmethod
+    def _stop_view(active: _ActiveMessage | None) -> None:
+        if active is None or active.view is None:
+            return
+        active.view.stop()
+        active.view.fut.cancel()
+
+    async def _finalize_active_message(self) -> None:
+        active, self._active_message = self._active_message, None
+        try:
+            await self._disable_items(active)
+        finally:
+            self._stop_view(active)
+
+    async def _send_message(
+        self,
+        messageable: Sendable,
+        message: ComponentV2Message | Message,
+        view: _ViewType | None,
+        edit: _Editable | None,
+    ) -> _Editable:
+        previous = self._active_message
+        sent = await send_helper(messageable, message, view, edit)
+        self._active_message = _ActiveMessage(message=message, view=view, editable=sent)
+        if previous is not None and previous.editable.id != sent.id:
+            try:
+                await self._disable_items(previous)
+            except Exception:
+                logger.exception('Failed to disable the previous flow message.')
+            finally:
+                self._stop_view(previous)
+        elif previous is not None and previous.view is not view:
+            self._stop_view(previous)
+        return sent
+
+    async def _exec_result(self, view: _ViewType, result: Result, view_config: ViewConfig) -> _ResultOutcome:
+        if result._interaction is None:
+            raise ValueError('result._interaction is None.')
+        messageable = result._interaction
+
+        match result._type:
+            case _ResultTypeEnum.MESSAGE:
+                assert result._message is not None
+                message = result._message
+                replacement = create_view(config=view_config, items=message.items or (), controller=self)
+                edit = None if self._active_message is None else self._active_message.editable
+                await self._send_message(messageable, message, replacement, edit)
+                return _ResultOutcome(switched_view=True)
+
+            case _ResultTypeEnum.MODEL:
+                assert result._model is not None
+                view.stop()
+                return _ResultOutcome(transition=(result._model, messageable), terminal=True)
+
+            case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
+                if not messageable.response.is_done():
+                    raise RuntimeError('Callback MUST consume interaction.')
+                if result._is_end:
                     view.stop()
-                    return None
+                    return _ResultOutcome(terminal=True)
+                active_view = None if self._active_message is None else self._active_message.view
+                return _ResultOutcome(terminal=active_view is view and view.is_finished())
 
-                if batch.base_exceptions:
-                    raise BaseExceptionGroup('Errors occurred in external tasks', batch.base_exceptions)
-                if batch.exceptions:
-                    await self.on_error(ExceptionGroup('Errors occurred in external tasks', batch.exceptions))
+    async def _handle_batch_errors(self, batch: _ResultBatch) -> None:
+        if batch.base_exceptions:
+            raise BaseExceptionGroup('Errors occurred in external tasks', batch.base_exceptions)
+        if batch.exceptions:
+            await self.on_error(ExceptionGroup('Errors occurred in external tasks', batch.exceptions))
 
-                for completed in batch.results:
-                    ret = await exec_result(
-                        view,
-                        completed.result,
-                        edit,
-                        has_pending_external_results=waiter.has_pending_external_result(),
-                    )
-                    if ret is not None or view.is_finished():
-                        return ret
+    async def _wait_result(
+        self,
+        initial_view: _ViewType,
+        view_config: ViewConfig,
+    ) -> tuple[ModelBase, Sendable] | None:
+        view: _ViewType | None = initial_view
+        while view is not None:
+            if not self.external_tasks and not view_can_produce_result(view):
+                view.stop()
+                return None
+
+            switched_view = False
+            async with _ResultWaiter(self, view) as waiter:
+                while not view.is_finished():
+                    batch = await waiter.wait()
+                    if batch.exhausted:  # if anyone cannot provide any results
+                        view.stop()
+                        return None
+
+                    await self._handle_batch_errors(batch)
+
+                    for completed in batch.results:
+                        outcome = await self._exec_result(view, completed.result, view_config)
+                        switched_view |= outcome.switched_view
+                        if outcome.terminal:
+                            return outcome.transition
+
+                    if switched_view:
+                        view = None if self._active_message is None else self._active_message.view
+                        break
+
+                    if batch.view_finished:
+                        return None
         return None
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:

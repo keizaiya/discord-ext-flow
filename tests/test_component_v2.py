@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from io import BytesIO
+from itertools import count
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, assert_type
 from unittest.mock import AsyncMock, MagicMock
 
 import discord.ext.flow.controller as controller_module
@@ -12,7 +14,7 @@ import pytest
 from discord import (
     ChannelType,
     Client,
-    File,
+    File as SendableFile,
     Forbidden,
     Interaction,
     InteractionResponseType,
@@ -20,31 +22,62 @@ from discord import (
     Poll,
     ui,
 )
+from discord.abc import Messageable
 from discord.ext.flow import (
     ActionRow,
     Button,
     ChannelSelect,
     ComponentV2Message,
     Container,
-    FileDisplay,
+    File,
+    InteractiveItem,
     LegacyMessage,
     Link,
     MediaGallery,
+    MentionableSelect,
     Message,
     ModelBase,
+    PremiumButton,
     Result,
+    RoleSelect,
     Section,
     Select,
     TextDisplay,
+    UserSelect,
     create_message,
 )
 from discord.ext.flow.controller import Controller
-from discord.ext.flow.util import exec_result, into_edit_kwargs, send_helper
+from discord.ext.flow.util import _Editable, into_edit_kwargs, send_helper
 from discord.ext.flow.view import _LayoutView, _View, create_view
 
 if TYPE_CHECKING:
-    from discord.abc import Messageable
-    from discord.ext.flow.util import _Editable
+    from discord import Member, Role, User
+    from discord.app_commands import AppCommandChannel, AppCommandThread
+    from discord.utils import MaybeAwaitableFunc
+
+
+def _interaction() -> Interaction[Client]:
+    """Create a typed interaction double when only identity is relevant."""
+    return MagicMock(spec=Interaction)
+
+
+def _messageable() -> Messageable:
+    """Create a typed messageable double when sending is mocked at the flow boundary."""
+    return MagicMock(spec=Messageable)
+
+
+_message_ids = count(1)
+
+
+def _editable(*, message_id: int | None = None) -> _Editable:
+    """Create a typed editable-message double when it is not exercised by the test."""
+    editable = MagicMock(spec=_Editable)
+    editable.id = next(_message_ids) if message_id is None else message_id
+    return editable
+
+
+def _sent(message: _Editable | None = None) -> _Editable:
+    return _editable() if message is None else message
 
 
 class _Model(ModelBase):
@@ -144,10 +177,41 @@ def _callback(_: Interaction[Client]) -> Result:
     return Result.finish_flow()
 
 
+def test_on_returns_an_identity_preserving_generic_named_tuple() -> None:
+    """Callback bindings are immutable tuple records which retain their raw config and callback."""
+    raw = Button(label='Continue')
+    binding = raw.on(callback=_callback)
+
+    assert isinstance(binding, InteractiveItem)
+    assert isinstance(binding, tuple)
+    assert binding._fields == ('item', 'callback')
+    assert binding[0] is raw
+    assert binding.item is raw
+    assert binding[1] is binding.callback is _callback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'raw',
+    [
+        Button(),
+        Select(),
+        UserSelect(),
+        RoleSelect(),
+        MentionableSelect(),
+        ChannelSelect(),
+    ],
+)
+async def test_raw_callback_capable_items_are_rejected_from_messages(raw: object) -> None:
+    """A raw Button or Select can only become a message component through .on()."""
+    with pytest.raises(TypeError, match=r'must be bound with \.on'):
+        create_view({}, (raw,), Controller(_Model()))  # type: ignore[arg-type, reportArgumentType]
+
+
 @pytest.mark.asyncio
 async def test_legacy_items_continue_to_use_view() -> None:
     """Legacy-only messages retain discord.ui.View behavior."""
-    view = create_view({}, (Button(callback=_callback),), Controller(_Model()))
+    view = create_view({}, (Button().on(callback=_callback),), Controller(_Model()))
 
     assert isinstance(view, _View)
     assert not isinstance(view, _LayoutView)
@@ -168,15 +232,15 @@ async def test_v2_items_select_layout_view() -> None:
 @pytest.mark.parametrize(
     'items',
     [
-        (Button(callback=_callback),),
+        (Button().on(callback=_callback),),
         (TextDisplay('Component V2 content'),),
     ],
 )
 @pytest.mark.asyncio
 async def test_view_types_share_result_lifecycle(items: tuple[object, ...]) -> None:
     """Legacy and V2 views use the same result future lifecycle."""
-    view = create_view({}, items, Controller(_Model()))  # type: ignore[arg-type]
-    interaction = cast('Interaction[Client]', object())
+    view = create_view({}, items, Controller(_Model()))  # type: ignore[arg-type, reportArgumentType]
+    interaction = _interaction()
 
     await view._set_result(Result.finish_flow(), interaction)
     completed_future = view.fut
@@ -192,11 +256,11 @@ async def test_view_types_share_result_lifecycle(items: tuple[object, ...]) -> N
 @pytest.mark.asyncio
 async def test_static_v2_model_completes_without_waiting_for_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
     """A terminal V2 model sends its layout and completes the controller invocation."""
-    send = AsyncMock(return_value=object())
+    send = AsyncMock(return_value=_sent())
     monkeypatch.setattr(controller_module, 'send_helper', send)
     model = _StaticV2Model()
 
-    await asyncio.wait_for(Controller(model).invoke(cast('Messageable', object())), timeout=0.1)
+    await asyncio.wait_for(Controller(model).invoke(_messageable()), timeout=0.1)
 
     await_args = send.await_args
     assert await_args is not None
@@ -209,14 +273,14 @@ async def test_static_v2_model_completes_without_waiting_for_interaction(monkeyp
 @pytest.mark.asyncio
 async def test_static_v2_model_waits_for_registered_external_task(monkeypatch: pytest.MonkeyPatch) -> None:
     """A static layout still permits an external task to drive a model transition."""
-    send = AsyncMock(return_value=object())
+    send = AsyncMock(return_value=_sent())
     monkeypatch.setattr(controller_module, 'send_helper', send)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
-    interaction = cast('Interaction[Client]', object())
+    interaction = _interaction()
     controller.model = _ExternalTaskV2Model(controller, terminal_model, interaction)
 
-    await asyncio.wait_for(controller.invoke(cast('Messageable', object())), timeout=0.1)
+    await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
 
     assert send.await_count == 2
     assert send.await_args_list[1].args[0] is interaction
@@ -228,21 +292,21 @@ async def test_static_message_replacement_keeps_pending_external_task(monkeypatc
     """A static replacement does not cancel another task that can still transition the flow."""
     replacement_sent = asyncio.Event()
 
-    async def send(*_: object) -> object:
+    async def send(*_: object) -> _Editable:
         if send_mock.await_count == 2:
             replacement_sent.set()
-        return object()
+        return _sent()
 
     send_mock = AsyncMock(side_effect=send)
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
     monkeypatch.setattr(util_module, 'send_helper', send_mock)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
-    interaction = cast('Interaction[Client]', object())
+    interaction = _interaction()
     transition_event = asyncio.Event()
     controller.model = _ReplacingExternalTaskV2Model(controller, terminal_model, interaction, transition_event)
 
-    invoke = asyncio.create_task(controller.invoke(cast('Messageable', object())))
+    invoke = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
 
     assert not invoke.done()
@@ -259,21 +323,21 @@ async def test_static_message_replacement_keeps_newly_registered_successor(
     """A task-created successor can transition the flow after its creator renders a static message."""
     replacement_sent = asyncio.Event()
 
-    async def send(*_: object) -> object:
+    async def send(*_: object) -> _Editable:
         if send_mock.await_count == 2:
             replacement_sent.set()
-        return object()
+        return _sent()
 
     send_mock = AsyncMock(side_effect=send)
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
     monkeypatch.setattr(util_module, 'send_helper', send_mock)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
-    interaction = cast('Interaction[Client]', object())
+    interaction = _interaction()
     transition_event = asyncio.Event()
     controller.model = _ChainedExternalTaskV2Model(controller, terminal_model, interaction, transition_event)
 
-    invoke = asyncio.create_task(controller.invoke(cast('Messageable', object())))
+    invoke = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
 
     assert not invoke.done()
@@ -286,7 +350,7 @@ async def test_static_message_replacement_keeps_newly_registered_successor(
 @pytest.mark.asyncio
 async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A static flow completes after reporting the failure of its final result source."""
-    send = AsyncMock(return_value=object())
+    send = AsyncMock(return_value=_sent())
     monkeypatch.setattr(controller_module, 'send_helper', send)
 
     class TrackingController(Controller):
@@ -311,7 +375,7 @@ async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypa
     model = FailingModel(controller)
     controller.model = model
 
-    await asyncio.wait_for(controller.invoke(cast('Messageable', object())), timeout=0.1)
+    await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
 
     controller.on_error_mock.assert_awaited_once()
     assert model.after_invoked
@@ -320,7 +384,7 @@ async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypa
 @pytest.mark.asyncio
 async def test_section_wraps_string_children_as_text_displays() -> None:
     """Section string children use discord.py's TextDisplay shorthand."""
-    section = Section(items=('First', TextDisplay('Second', id=2)), accessory=Button(callback=_callback))
+    section = Section(items=('First', TextDisplay('Second', id=2)), accessory=Button().on(callback=_callback))
     view = create_view({}, (section,), Controller(_Model()))
 
     assert isinstance(view, _LayoutView)
@@ -340,7 +404,7 @@ async def test_nested_v2_button_returns_result_to_flow() -> None:
     layout = Container(
         items=(
             TextDisplay('Component V2 content'),
-            ActionRow(items=(Button(callback=_callback, label='Continue'),)),
+            ActionRow(items=(Button(label='Continue').on(callback=_callback),)),
         ),
     )
     view = create_view(
@@ -357,7 +421,7 @@ async def test_nested_v2_button_returns_result_to_flow() -> None:
     button = action_row.children[0]
     assert isinstance(button, ui.Button)
 
-    interaction = cast('Interaction[Client]', object())
+    interaction = _interaction()
     await button.callback(interaction)
 
     result = await view._wait()
@@ -368,21 +432,35 @@ async def test_nested_v2_button_returns_result_to_flow() -> None:
 @pytest.mark.asyncio
 async def test_v2_callback_update_to_static_layout_stops_view(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replacing callback controls with static V2 content completes the current flow model."""
-    view = create_view(
-        {},
-        (ActionRow(items=(Button(callback=_callback, label='Finish'),)),),
-        Controller(_Model()),
-    )
-    send = AsyncMock(return_value=object())
-    monkeypatch.setattr(util_module, 'send_helper', send)
-    interaction = cast('Interaction[Client]', object())
+    sent = asyncio.Event()
+    editables = (_editable(), _editable())
+
+    class Model(ModelBase):
+        def message(self) -> ComponentV2Message:
+            return ComponentV2Message(items=(ActionRow(items=(Button(label='Finish').on(callback=_callback),)),))
+
+    async def send(*_: object) -> _Editable:
+        sent.set()
+        return _sent(editables[send_mock.await_count - 1])
+
+    send_mock = AsyncMock(side_effect=send)
+    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    view = send_mock.await_args_list[0].args[2]
+    assert isinstance(view, _LayoutView)
+    interaction = _interaction()
 
     result = Result.send_message(ComponentV2Message(items=(TextDisplay('Finished'),)), interaction=interaction)
-    returned = await exec_result(view, result, cast('_Editable', object()))
+    await view._set_result(result, interaction)
+    await asyncio.wait_for(invocation, timeout=0.1)
 
-    assert returned is None
     assert view.is_finished()
-    assert isinstance(view.children[0], ui.TextDisplay)
+    replacement = send_mock.await_args_list[1].args[2]
+    assert isinstance(replacement, _LayoutView)
+    assert replacement.is_finished()
+    assert isinstance(replacement.children[0], ui.TextDisplay)
 
 
 @pytest.mark.asyncio
@@ -413,27 +491,69 @@ async def test_section_accepts_link_accessory() -> None:
     assert rendered_section.accessory.url == 'https://example.com/docs'
 
 
-def test_link_url_matches_select_options_argument_binding() -> None:
-    """Link URL accepts the same positional or keyword binding as Select options."""
-    positional = Link('Documentation')
-    keyword = Link(label='Documentation')
+@pytest.mark.asyncio
+async def test_button_link_and_premium_button_preserve_discord_component_ids() -> None:
+    """Button variants retain numeric ids and premium buttons remain raw/non-interactive."""
+    button = Button(label='Continue', id=1).on(callback=_callback)
+    link = Link(url='https://example.com', id=2)
+    premium = PremiumButton(123, disabled=True, row=1, id=3)
 
-    assert positional.label == keyword.label == 'Documentation'
-    assert positional.url is None
+    legacy = create_view({}, (button, link, premium), Controller(_Model()))
+    rendered_button, rendered_link, rendered_premium = legacy.children
+    assert isinstance(rendered_button, ui.Button)
+    assert rendered_button.id == 1
+    assert isinstance(rendered_link, ui.Button)
+    assert rendered_link.id == 2
+    assert isinstance(rendered_premium, ui.Button)
+    assert rendered_premium.to_component_dict() == {'type': 2, 'style': 6, 'disabled': True, 'id': 3, 'sku_id': '123'}
+    assert rendered_premium.row == 1
+    assert rendered_premium.is_dispatchable() is False
 
-    link = Link('Documentation', url='https://example.com/docs')
+
+@pytest.mark.asyncio
+async def test_premium_button_is_valid_in_v2_action_rows_and_section_accessories() -> None:
+    """The raw premium config can occupy every non-interactive Button position."""
+    premium = PremiumButton(456)
+    layout = create_view(
+        {},
+        (
+            ActionRow(items=(premium,)),
+            Section(items=('Upgrade',), accessory=premium),
+        ),
+        Controller(_Model()),
+    )
+
+    row, section = layout.children
+    assert isinstance(row, ui.ActionRow)
+    # discord.py's Item generic is invariant, so this runtime narrowing leaves its view type unknown.
+    assert isinstance(row.children[0], ui.Button)  # type: ignore[reportUnknownMemberType]
+    assert row.children[0].sku_id == 456  # type: ignore[reportUnknownMemberType]
+    assert isinstance(section, ui.Section)
+    # discord.py's Item generic is invariant, so this runtime narrowing leaves its view type unknown.
+    assert isinstance(section.accessory, ui.Button)  # type: ignore[reportUnknownMemberType]
+    assert section.accessory.sku_id == 456  # type: ignore[reportUnknownMemberType]
+
+
+def test_link_url_is_required_and_accepts_positional_or_keyword_binding() -> None:
+    """A link target is required and is the first positional config field."""
+    positional = Link('https://example.com/docs', 'Documentation')
+    keyword = Link(url='https://example.com/docs', label='Documentation')
+
+    assert positional == keyword
+
+    link = Link('https://example.com/docs', label='Documentation')
     assert link.label == 'Documentation'
     assert link.url == 'https://example.com/docs'
 
-    positional_url = Link('Documentation', False, None, None, 'https://example.com/docs')
-    assert positional_url.url == 'https://example.com/docs'
+    with pytest.raises(TypeError, match="missing 1 required positional argument: 'url'"):
+        Link()  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
 async def test_channel_select_preserves_channel_types() -> None:
     """ChannelSelect forwards its configured channel type filter to discord.py."""
-    select = ChannelSelect(
-        callback=lambda _interaction, _values: Result.finish_flow(), channel_types=(ChannelType.text,)
+    select = ChannelSelect(channel_types=(ChannelType.text,)).on(
+        callback=lambda _interaction, _values: Result.finish_flow()
     )
     view = create_view({}, (ActionRow(items=(select,)),), Controller(_Model()))
 
@@ -471,9 +591,66 @@ if TYPE_CHECKING:
 
     def _check_create_message_overloads() -> None:  # type: ignore[reportUnusedFunction]
         v2_message: ComponentV2Message = create_message(items=(TextDisplay('content'),))
-        legacy_message: LegacyMessage = create_message(items=(Button(callback=_callback),))
+        legacy_message: LegacyMessage = create_message(items=(Button().on(callback=_callback),))
         assert v2_message
         assert legacy_message
+
+    def _check_callback_binding_types() -> None:  # type: ignore[reportUnusedFunction]
+        def button_callback(_: Interaction[Client]) -> Result:
+            return Result.finish_flow()
+
+        def select_callback(_: Interaction[Client], __: list[str]) -> Result:
+            return Result.finish_flow()
+
+        def user_callback(_: Interaction[Client], __: list[User | Member]) -> Result:
+            return Result.finish_flow()
+
+        def role_callback(_: Interaction[Client], __: list[Role]) -> Result:
+            return Result.finish_flow()
+
+        def mentionable_callback(_: Interaction[Client], __: list[User | Member | Role]) -> Result:
+            return Result.finish_flow()
+
+        def channel_callback(_: Interaction[Client], __: list[AppCommandChannel | AppCommandThread]) -> Result:
+            return Result.finish_flow()
+
+        button = Button()
+        select = Select()
+        user = UserSelect()
+        role = RoleSelect()
+        mentionable = MentionableSelect()
+        channel = ChannelSelect()
+
+        assert_type(button.on(callback=button_callback).item, Button)
+        assert_type(button.on(callback=button_callback).callback, MaybeAwaitableFunc[[Interaction[Client]], Result])
+        assert_type(select.on(callback=select_callback).item, Select)
+        assert_type(
+            select.on(callback=select_callback).callback, MaybeAwaitableFunc[[Interaction[Client], list[str]], Result]
+        )
+        assert_type(
+            user.on(callback=user_callback).callback,
+            MaybeAwaitableFunc[[Interaction[Client], list[User | Member]], Result],
+        )
+        assert_type(
+            role.on(callback=role_callback).callback, MaybeAwaitableFunc[[Interaction[Client], list[Role]], Result]
+        )
+        assert_type(
+            mentionable.on(callback=mentionable_callback).callback,
+            MaybeAwaitableFunc[[Interaction[Client], list[User | Member | Role]], Result],
+        )
+        assert_type(
+            channel.on(callback=channel_callback).callback,
+            MaybeAwaitableFunc[[Interaction[Client], list[AppCommandChannel | AppCommandThread]], Result],
+        )
+
+        raw_button = Button()
+        raw_select = Select()
+        premium = PremiumButton(1)
+        LegacyMessage(items=(raw_button,))  # type: ignore[arg-type]
+        ActionRow(items=(raw_select,))  # type: ignore[arg-type]
+        LegacyMessage(items=(premium,))
+        ActionRow(items=(premium,))
+        Section(items=('Upgrade',), accessory=premium)
 
 
 def test_create_message_rejects_v2_incompatible_fields() -> None:
@@ -491,11 +668,11 @@ def test_create_message_rejects_v2_incompatible_fields() -> None:
     with pytest.raises(ValueError, match='suppress_embeds'):
         create_message(items=(text,), suppress_embeds=True)
     with pytest.raises(ValueError, match='cannot be mixed'):
-        create_message(items=(text, Button(callback=_callback)))
+        create_message(items=(text, Button().on(callback=_callback)))
 
 
-def test_legacy_to_v2_edit_clears_traditional_message_fields() -> None:
-    """Editing to V2 explicitly clears fields required by the Discord API."""
+def test_v2_edit_preserves_attachments_when_files_are_omitted() -> None:
+    """Editing a V2 message without files leaves existing attachments unchanged."""
     text = TextDisplay('Component V2 content')
     message = ComponentV2Message(items=(text,))
 
@@ -503,13 +680,13 @@ def test_legacy_to_v2_edit_clears_traditional_message_fields() -> None:
 
     assert kwargs['content'] is None if 'content' in kwargs else True
     assert kwargs['embeds'] == () if 'embeds' in kwargs else True
-    assert kwargs['attachments'] == () if 'attachments' in kwargs else True
+    assert 'attachments' not in kwargs
 
 
 def test_legacy_to_v2_edit_preserves_new_file_attachments() -> None:
     """A single multipart edit can replace legacy attachments while enabling V2."""
     text = TextDisplay('Component V2 content')
-    attachment = cast('File', object())
+    attachment = SendableFile(BytesIO(b''), filename='attachment.txt')
     message = ComponentV2Message(items=(text,), files=(attachment,))
 
     kwargs = into_edit_kwargs(message._to_dict(), components_v2=True)
@@ -522,7 +699,7 @@ def test_legacy_to_v2_edit_preserves_new_file_attachments() -> None:
 
 def test_v2_edit_accepts_explicit_file_attachments() -> None:
     """A V2 edit can replace attachments in the same request."""
-    attachment = cast('File', object())
+    attachment = SendableFile(BytesIO(b''), filename='attachment.txt')
     message = ComponentV2Message(items=(TextDisplay('Component V2 content'),), files=(attachment,))
 
     kwargs = into_edit_kwargs(message._to_dict(), components_v2=True)
@@ -531,14 +708,24 @@ def test_v2_edit_accepts_explicit_file_attachments() -> None:
     assert kwargs['attachments'] == (attachment,)
 
 
+def test_v2_edit_accepts_explicit_empty_file_attachments() -> None:
+    """An explicit empty file sequence removes all attachments during a V2 edit."""
+    message = ComponentV2Message(items=(TextDisplay('Component V2 content'),), files=())
+
+    kwargs = into_edit_kwargs(message._to_dict(), components_v2=True)
+
+    assert 'attachments' in kwargs
+    assert kwargs['attachments'] == ()
+
+
 @pytest.mark.parametrize('response_done', [False, True])
 @pytest.mark.asyncio
 async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
     monkeypatch: pytest.MonkeyPatch, *, response_done: bool
 ) -> None:
     """Legacy edits are attempted without inspecting the target's component mode."""
-    edited_message = cast('_Editable', object())
-    interaction_message = cast('_Editable', object())
+    edited_message = _editable()
+    interaction_message = _editable()
     response = SimpleNamespace(
         is_done=lambda: response_done,
         edit_message=AsyncMock(),
@@ -559,10 +746,10 @@ async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
     monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
 
     returned = await send_helper(
-        cast('Interaction[Client]', interaction),
+        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
         LegacyMessage(content='Legacy state', edit_original=True),
         None,
-        cast('_Editable', edit),
+        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
     )
 
     followup.send.assert_not_awaited()
@@ -590,10 +777,10 @@ async def test_legacy_partial_message_is_edited_without_fetching() -> None:
     messageable = SimpleNamespace(send=AsyncMock())
 
     returned = await send_helper(
-        cast('Messageable', messageable),
+        messageable,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only send().
         LegacyMessage(content='Updated', edit_original=True),
         None,
-        cast('_Editable', edit),
+        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
     )
 
     edit.fetch.assert_not_awaited()
@@ -615,10 +802,10 @@ async def test_v2_edit_of_partial_message_does_not_fetch() -> None:
     messageable = SimpleNamespace(send=AsyncMock())
 
     returned = await send_helper(
-        cast('Messageable', messageable),
+        messageable,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only send().
         ComponentV2Message(items=(TextDisplay('Updated'),), edit_original=True),
         None,
-        cast('_Editable', edit),
+        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
     )
 
     edit.fetch.assert_not_awaited()
@@ -626,7 +813,7 @@ async def test_v2_edit_of_partial_message_does_not_fetch() -> None:
     edit_await_args = edit.edit.await_args
     assert edit_await_args is not None
     edit_kwargs = edit_await_args.kwargs
-    assert edit_kwargs['attachments'] == ()
+    assert 'attachments' not in edit_kwargs
     messageable.send.assert_not_awaited()
     assert returned is edit.edit.return_value
 
@@ -654,7 +841,7 @@ async def test_deferred_ephemeral_v2_response_retains_interaction_message(
     monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
 
     returned = await send_helper(
-        cast('Interaction[Client]', interaction),
+        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
         ComponentV2Message(
             items=(TextDisplay('Ephemeral'),),
             ephemeral=True,
@@ -676,17 +863,17 @@ def test_v2_edit_matches_discord_py_for_incompatible_kwargs() -> None:
 
     assert converted['content'] is None if 'content' in converted else True
     assert converted['embeds'] == () if 'embeds' in converted else True
-    assert converted['attachments'] == () if 'attachments' in converted else True
+    assert 'attachments' not in converted
 
 
 @pytest.mark.parametrize(
     'items',
     [
-        tuple(Button(callback=_callback) for _ in range(6)),
-        (Button(callback=_callback), Select(callback=lambda _interaction, _values: Result.finish_flow())),
+        tuple(Button().on(callback=_callback) for _ in range(6)),
+        (Button().on(callback=_callback), Select().on(callback=lambda _interaction, _values: Result.finish_flow())),
         (
-            Select(callback=lambda _interaction, _values: Result.finish_flow()),
-            Select(callback=lambda _interaction, _values: Result.finish_flow()),
+            Select().on(callback=lambda _interaction, _values: Result.finish_flow()),
+            Select().on(callback=lambda _interaction, _values: Result.finish_flow()),
         ),
     ],
 )
@@ -710,7 +897,7 @@ async def test_section_delegates_text_item_count_validation_to_discord_py(count:
     """Section configs defer text item count validation until conversion."""
     section = Section(
         items=tuple(TextDisplay(str(index)) for index in range(count)),
-        accessory=Button(callback=_callback),
+        accessory=Button().on(callback=_callback),
     )
 
     with pytest.raises(ValueError, match=r'maximum number of children exceeded \(3\)'):
@@ -719,7 +906,7 @@ async def test_section_delegates_text_item_count_validation_to_discord_py(count:
 
 def test_empty_section_matches_discord_py() -> None:
     """discord.py permits construction of an empty Section."""
-    Section(items=(), accessory=Button(callback=_callback))
+    Section(items=(), accessory=Button().on(callback=_callback))
 
 
 @pytest.mark.parametrize('count', [11])
@@ -742,13 +929,13 @@ def test_empty_media_gallery_matches_discord_py() -> None:
 
 def test_file_display_string_validation_matches_discord_py() -> None:
     """discord.py passes File media strings through without local validation."""
-    FileDisplay('https://example.com/file.txt')
+    File('https://example.com/file.txt')
 
 
 @pytest.mark.asyncio
 async def test_v2_layout_delegates_total_component_count_validation_to_discord_py() -> None:
     """Layout conversion delegates discord.py's nested component count validation."""
-    rows = tuple(ActionRow(items=(Button(callback=_callback),)) for _ in range(20))
+    rows = tuple(ActionRow(items=(Button().on(callback=_callback),)) for _ in range(20))
 
     with pytest.raises(ValueError, match=r'maximum number of children exceeded \(40\)'):
         create_view({}, (Container(items=rows),), Controller(_Model()))
@@ -764,8 +951,8 @@ async def test_v2_layout_allows_duplicate_item_ids_like_discord_py() -> None:
 async def test_v2_layout_allows_duplicate_custom_ids_like_discord_py() -> None:
     """discord.py does not locally validate interactive custom ID uniqueness."""
     rows = (
-        ActionRow(items=(Button(callback=_callback, custom_id='duplicate'),)),
-        ActionRow(items=(Button(callback=_callback, custom_id='duplicate'),)),
+        ActionRow(items=(Button(custom_id='duplicate').on(callback=_callback),)),
+        ActionRow(items=(Button(custom_id='duplicate').on(callback=_callback),)),
     )
 
     create_view({}, rows, Controller(_Model()))

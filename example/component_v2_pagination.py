@@ -12,6 +12,7 @@ from discord.ext.flow import (
     ComponentV2Paginator,
     Container,
     Controller,
+    InteractiveButton,
     ModelBase,
     PaginatorControls,
     Result,
@@ -54,13 +55,13 @@ class Pagination(ModelBase):
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Button:
+    def button_callback(self, state: int) -> InteractiveButton:
         async def callback(interaction: Interaction) -> Result:
             print(state)
             await interaction.response.defer()
             return Result.finish_flow()
 
-        return Button(label=str(state), callback=callback)
+        return Button(label=str(state)).on(callback=callback)
 
 
 class MyClient(Client):

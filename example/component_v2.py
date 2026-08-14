@@ -31,7 +31,7 @@ class ComponentV2Flow(ModelBase):
                 Container(
                     items=(
                         TextDisplay('This text is rendered by a Component V2 layout.'),
-                        ActionRow(items=(Button(label='Finish', callback=self.finish),)),
+                        ActionRow(items=(Button(label='Finish').on(callback=self.finish),)),
                     ),
                 ),
             ),

@@ -1,36 +1,33 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, NamedTuple, cast, overload
+from typing import TYPE_CHECKING, NamedTuple, overload
 
 from discord.utils import maybe_coroutine
 
-from .modal import ModalConfig, TextInput, send_modal
-from .model import (
+from .item import (
     ActionRow,
     Button,
-    ChannelSelect,
-    ComponentV2Message,
     Container,
-    LegacyMessage,
-    MentionableSelect,
-    RoleSelect,
+    InteractiveButton,
+    InteractiveItem,
+    Label,
     Section,
-    Select,
-    UserSelect,
+    TextInput,
 )
+from .modal import ModalConfig, send_modal
+from .model import ComponentV2Message, LegacyMessage
 from .result import Result, _ResultTypeEnum
 from .util import items_can_produce_result
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-    from typing import Any
 
     from discord import Interaction
     from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
-    from .model import ActionRowItemType, ContainerItemType, LegacyItemType, V2ItemType
+    from .item import ActionRowItemType, ContainerItemType, LegacyItemType, V2ItemType
 
 
 __all__ = ('ComponentV2Paginator', 'Paginator', 'PaginatorControls', 'paginator')
@@ -45,11 +42,11 @@ LAST_EMOJI = '\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f'
 class PaginatorControls(NamedTuple):
     """Navigation buttons supplied to a Component V2 paginator message builder."""
 
-    first: Button
-    previous: Button
-    page: Button
-    next: Button
-    last: Button
+    first: InteractiveButton
+    previous: InteractiveButton
+    page: InteractiveButton
+    next: InteractiveButton
+    last: InteractiveButton
 
 
 def _result_finishes_pagination(result: Result) -> bool:
@@ -87,11 +84,13 @@ class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
         is_final_page = not_paging or self.current_page == self.max_page - 1
 
         return PaginatorControls(
-            first=Button(emoji=FIRST_EMOJI, row=row, disabled=is_first_page, callback=self._go_to_first_page),
-            previous=Button(emoji=PREVIOUS_EMOJI, row=row, disabled=is_first_page, callback=self._go_to_previous_page),
-            page=Button(label=label, row=row, disabled=not_paging, callback=self._go_to_page),
-            next=Button(emoji=NEXT_EMOJI, row=row, disabled=is_final_page, callback=self._go_to_next_page),
-            last=Button(emoji=LAST_EMOJI, row=row, disabled=is_final_page, callback=self._go_to_last_page),
+            first=Button(emoji=FIRST_EMOJI, row=row, disabled=is_first_page).on(callback=self._go_to_first_page),
+            previous=Button(emoji=PREVIOUS_EMOJI, row=row, disabled=is_first_page).on(
+                callback=self._go_to_previous_page
+            ),
+            page=Button(label=label, row=row, disabled=not_paging).on(callback=self._go_to_page),
+            next=Button(emoji=NEXT_EMOJI, row=row, disabled=is_final_page).on(callback=self._go_to_next_page),
+            last=Button(emoji=LAST_EMOJI, row=row, disabled=is_final_page).on(callback=self._go_to_last_page),
         )
 
     def _finalize_modal[**P](self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
@@ -117,17 +116,24 @@ class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
         return Result.send_message(message=await self._message(edit_original=True))
 
     async def _go_to_page(self, interaction: Interaction) -> Result:
-        async def callback(interaction: Interaction, texts: tuple[str]) -> Result:
-            assert len(texts) >= 1
-            assert texts[0].isdigit()
-            self._set_page_number(int(texts[0]) - 1)
+        page_number = TextInput(placeholder=f'1 ~ {self.max_page}').field()
+
+        async def callback(interaction: Interaction) -> Result:
+            text = page_number.value
+            assert text.isdigit()
+            self._set_page_number(int(text) - 1)
             return Result.send_message(message=await self._message(edit_original=True), interaction=interaction)
 
         task = await send_modal(
             callback,
             interaction,
             ModalConfig(title='Page Number'),
-            (TextInput(label='page number', placeholder=f'1 ~ {self.max_page}', required=True),),
+            (
+                Label(
+                    text='Page number',
+                    component=page_number,
+                ),
+            ),
         )
         self.modal_tasks.append(task)
         self.modal_tasks[:] = [t for t in self.modal_tasks if not t.done()]
@@ -182,8 +188,8 @@ class Paginator[T](_BasePaginator[T, LegacyMessage]):
         items: list[LegacyItemType] = []
         if msg.items is not None:
             for item in msg.items:
-                if isinstance(item, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)):
-                    item = replace(item, callback=self._finalize_modal(item.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                if isinstance(item, InteractiveItem):
+                    item = item.item.on(callback=self._finalize_modal(item.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
                 items.append(item)
         if len(items) > 20:
             raise ValueError('LegacyMessage.items must be less than 20')
@@ -237,14 +243,14 @@ class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
         if isinstance(item, ActionRow):
             items: list[ActionRowItemType] = []
             for child in item.items:
-                if isinstance(child, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)):
-                    child = replace(child, callback=self._finalize_modal(child.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                if isinstance(child, InteractiveItem):
+                    child = child.item.on(callback=self._finalize_modal(child.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
                 items.append(child)
             return replace(item, items=items)
-        if isinstance(item, Section) and isinstance(item.accessory, Button):
+        if isinstance(item, Section) and isinstance(item.accessory, InteractiveItem):
             return replace(
                 item,
-                accessory=replace(item.accessory, callback=self._finalize_modal(item.accessory.callback)),
+                accessory=item.accessory.item.on(callback=self._finalize_modal(item.accessory.callback)),
             )
         return item
 
@@ -255,26 +261,25 @@ class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
 
 
 @overload
-def paginator[**P](
-    func: MaybeAwaitableFunc[P, Paginator[Any]],
+def paginator[**P, T](
+    func: MaybeAwaitableFunc[P, Paginator[T]],
 ) -> Callable[P, Awaitable[LegacyMessage]]: ...
 
 
 @overload
-def paginator[**P](
-    func: MaybeAwaitableFunc[P, ComponentV2Paginator[Any]],
+def paginator[**P, T](
+    func: MaybeAwaitableFunc[P, ComponentV2Paginator[T]],
 ) -> Callable[P, Awaitable[ComponentV2Message]]: ...
 
 
-def paginator[**P](
-    func: MaybeAwaitableFunc[P, Any],
-) -> Callable[P, Awaitable[Any]]:
+def paginator[**P, T](
+    func: MaybeAwaitableFunc[P, Paginator[T] | ComponentV2Paginator[T]],
+) -> Callable[P, Awaitable[LegacyMessage | ComponentV2Message]]:
     """Wrap a function returning a legacy or Component V2 paginator for use as `ModelBase.message`."""
 
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ComponentV2Message | LegacyMessage:
-        paginator_instance = cast(
-            'Paginator[Any] | ComponentV2Paginator[Any]', await maybe_coroutine(func, *args, **kwargs)
-        )
-        return await paginator_instance._message()
+        paginator_instance = await maybe_coroutine(func, *args, **kwargs)
+        # discord.py's maybe_coroutine stub discards the generic return type here.
+        return await paginator_instance._message()  # type: ignore[no-any-return, attr-defined]
 
     return wrapper

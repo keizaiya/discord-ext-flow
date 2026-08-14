@@ -4,7 +4,7 @@ from os import getenv
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Result
+from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Result
 
 
 class StartModel(ModelBase):
@@ -15,11 +15,11 @@ class StartModel(ModelBase):
             disable_items=True,
         )
 
-    def button(self, state: int) -> Button:
+    def button(self, state: int) -> InteractiveButton:
         def inner(_: Interaction) -> Result:
             return Result.next_model(model=SecondModel((state,)))
 
-        return Button(label=f'{state + 1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', row=1).on(callback=inner)
 
 
 class SecondModel(ModelBase):
@@ -30,7 +30,7 @@ class SecondModel(ModelBase):
         return Message(
             content='second!',
             items=(
-                Button(label='back!', callback=self.back_button),
+                Button(label='back!').on(callback=self.back_button),
                 *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
@@ -39,11 +39,11 @@ class SecondModel(ModelBase):
     def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=StartModel())
 
-    def button(self, state: int) -> Button:
+    def button(self, state: int) -> InteractiveButton:
         def inner(_: Interaction) -> Result:
             return Result.next_model(model=ThirdModel((*self.status, state)))
 
-        return Button(label=f'{state + 1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', row=1).on(callback=inner)
 
 
 class ThirdModel(ModelBase):
@@ -54,7 +54,7 @@ class ThirdModel(ModelBase):
         return Message(
             content='third!',
             items=(
-                Button(label='back!', callback=self.back_button),
+                Button(label='back!').on(callback=self.back_button),
                 *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
@@ -63,11 +63,11 @@ class ThirdModel(ModelBase):
     def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=SecondModel(self.status[:-1]))
 
-    def button(self, state: int) -> Button:
+    def button(self, state: int) -> InteractiveButton:
         def inner(_: Interaction) -> Result:
             return Result.next_model(model=FourthModel((*self.status, state)))
 
-        return Button(label=f'{state + 1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', row=1).on(callback=inner)
 
 
 class FourthModel(ModelBase):
@@ -78,7 +78,7 @@ class FourthModel(ModelBase):
         return Message(
             content='fourth!',
             items=(
-                Button(label='back!', callback=self.back_button),
+                Button(label='back!').on(callback=self.back_button),
                 *tuple(self.button(i) for i in range(5)),
             ),
             disable_items=True,
@@ -87,11 +87,11 @@ class FourthModel(ModelBase):
     def back_button(self, _: Interaction) -> Result:
         return Result.next_model(model=ThirdModel(self.status[:-1]))
 
-    def button(self, state: int) -> Button:
+    def button(self, state: int) -> InteractiveButton:
         def inner(_: Interaction) -> Result:
             return Result.next_model(model=FinishModel((*self.status, state)))
 
-        return Button(label=f'{state + 1}', callback=inner, row=1)
+        return Button(label=f'{state + 1}', row=1).on(callback=inner)
 
 
 class FinishModel(ModelBase):

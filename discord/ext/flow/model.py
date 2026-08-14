@@ -1,80 +1,31 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple, overload
 
-from discord import ButtonStyle, SeparatorSpacing
+from .item import is_sequence_all_v2_item, is_sequence_legacy_item, is_sequence_v2_item
 
 __all__ = (
-    'ActionRow',
-    'Button',
-    'ChannelSelect',
     'ComponentV2Message',
-    'Container',
-    'FileDisplay',
     'LegacyMessage',
-    'Link',
-    'MediaGallery',
-    'MentionableSelect',
     'Message',
     'ModelBase',
-    'RoleSelect',
-    'Section',
-    'Select',
-    'Separator',
-    'TextDisplay',
-    'Thumbnail',
-    'UserSelect',
     'create_message',
 )
 
 
 if TYPE_CHECKING:
-    import sys
     from collections.abc import Sequence
     from typing import Any, TypedDict
 
-    from discord import (
-        AllowedMentions,
-        ChannelType,
-        ClientUser,
-        Colour,
-        Embed,
-        Emoji,
-        File,
-        Interaction,
-        MediaGalleryItem,
-        Member,
-        Object,
-        PartialEmoji,
-        Poll,
-        Role,
-        SelectDefaultValue,
-        SelectOption,
-        Thread,
-        UnfurledMediaItem,
-        User,
-    )
-    from discord.abc import GuildChannel
-    from discord.app_commands import AppCommandChannel, AppCommandThread
+    from discord import AllowedMentions, Embed, File as SendableFile, Poll
     from discord.ui import LayoutView, View
-    from discord.utils import MaybeAwaitable, MaybeAwaitableFunc
+    from discord.utils import MaybeAwaitable
 
-    from .result import Result
+    from .item import CreateItemType, ItemType as _ItemType, LegacyItemType, V2ItemType
 
-    if sys.version_info < (3, 13):
-        from typing_extensions import TypeIs
-    else:
-        from typing import TypeIs
+    type ItemType = _ItemType
 
     __all__ += (  # type: ignore[reportUnsupportedDunderAll, assignment]
-        'ActionRowItemType',
-        'ContainerItemType',
-        'CreateItemType',
-        'ItemType',
-        'LegacyItemType',
-        'V2ItemType',
-        'ValidDefaultValues',
         'ViewConfig',
     )
 
@@ -90,7 +41,7 @@ if TYPE_CHECKING:
         content: str
         tts: bool
         embeds: Sequence[Embed]
-        files: Sequence[File]
+        files: Sequence[SendableFile]
         delete_after: float
         allowed_mentions: AllowedMentions
         view: LayoutView | View
@@ -98,20 +49,6 @@ if TYPE_CHECKING:
         ephemeral: bool
         silent: bool
         poll: Poll
-
-    # copied from discord.ui.select
-    type ValidDefaultValues = (
-        SelectDefaultValue
-        | Object
-        | Role
-        | Member
-        | ClientUser
-        | User
-        | GuildChannel
-        | AppCommandChannel
-        | AppCommandThread
-        | Thread
-    )
 
 
 class Message(NamedTuple):
@@ -123,14 +60,14 @@ class Message(NamedTuple):
         - `embed`, `file`, or `sticker` is not support. use `embeds`, `files`, or `stickers` instead.
         - `reference` is not support in Interaction.
         - `edit_original` will edit original message if True.
-        - `disable_items` will disable all items when call after_invoke.
+        - `disable_items` disables all items when this message stops being the active flow message.
     """
 
     content: str | None = None
     items: Sequence[LegacyItemType] | None = None
     tts: bool = False
     embeds: Sequence[Embed] | None = None
-    files: Sequence[File] | None = None
+    files: Sequence[SendableFile] | None = None
     delete_after: float | None = None
     allowed_mentions: AllowedMentions | None = None
     suppress_embeds: bool = False
@@ -175,11 +112,11 @@ class ComponentV2Message(NamedTuple):
         - `content`, `tts`, `embeds`, `poll`, and `suppress_embeds` are not supported.
         - `reference` is not support in Interaction.
         - `edit_original` will edit original message if True.
-        - `disable_items` will disable all items when call after_invoke.
+        - `disable_items` disables all items when this message stops being the active flow message.
     """
 
     items: Sequence[V2ItemType]
-    files: Sequence[File] | None = None
+    files: Sequence[SendableFile] | None = None
     delete_after: float | None = None
     allowed_mentions: AllowedMentions | None = None
     ephemeral: bool = False
@@ -205,7 +142,7 @@ def create_message(
     items: None = None,
     tts: bool = False,
     embeds: Sequence[Embed] | None = None,
-    files: Sequence[File] | None = None,
+    files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
     suppress_embeds: bool = False,
@@ -224,7 +161,7 @@ def create_message(
     items: Sequence[LegacyItemType],
     tts: bool = False,
     embeds: Sequence[Embed] | None = None,
-    files: Sequence[File] | None = None,
+    files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
     suppress_embeds: bool = False,
@@ -243,7 +180,7 @@ def create_message(
     items: Sequence[V2ItemType],
     tts: bool = False,
     embeds: Sequence[Embed] | None = None,
-    files: Sequence[File] | None = None,
+    files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
     suppress_embeds: bool = False,
@@ -262,7 +199,7 @@ def create_message(
     items: Sequence[CreateItemType],
     tts: bool = False,
     embeds: Sequence[Embed] | None = None,
-    files: Sequence[File] | None = None,
+    files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
     suppress_embeds: bool = False,
@@ -280,7 +217,7 @@ def create_message(  # noqa: PLR0913
     items: Sequence[CreateItemType] | None = None,
     tts: bool = False,
     embeds: Sequence[Embed] | None = None,
-    files: Sequence[File] | None = None,
+    files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
     suppress_embeds: bool = False,
@@ -291,11 +228,8 @@ def create_message(  # noqa: PLR0913
     disable_items: bool = False,
 ) -> ComponentV2Message | LegacyMessage:
     """Create a V2 or legacy message according to the supplied component items."""
-    from typing import cast  # noqa: PLC0415
-
-    uses_v2 = items is not None and any(_is_v2_top_level_item(item) for item in items)
-    if uses_v2:
-        if items is not None and not all(_is_v2_top_level_item(item) for item in items):
+    if items is not None and is_sequence_v2_item(items):
+        if not is_sequence_all_v2_item(items):
             raise ValueError('Component V2 top-level items cannot be mixed with legacy top-level items.')
         incompatible_fields = [
             name
@@ -313,9 +247,8 @@ def create_message(  # noqa: PLR0913
         if incompatible_fields:
             fields = ', '.join(incompatible_fields)
             raise ValueError(f'Component V2 messages cannot use these fields: {fields}')
-        assert items is not None
         return ComponentV2Message(
-            items=cast('Sequence[V2ItemType]', items),
+            items=items,
             files=files,
             delete_after=delete_after,
             allowed_mentions=allowed_mentions,
@@ -324,9 +257,11 @@ def create_message(  # noqa: PLR0913
             edit_original=edit_original,
             disable_items=disable_items,
         )
+    if items is not None and not is_sequence_legacy_item(items):
+        raise AssertionError('Component items must be legacy items when no Component V2 item is present.')
     return LegacyMessage(
         content=content,
-        items=cast('Sequence[LegacyItemType] | None', items),
+        items=items,
         tts=tts,
         embeds=embeds,
         files=files,
@@ -339,202 +274,6 @@ def create_message(  # noqa: PLR0913
         edit_original=edit_original,
         disable_items=disable_items,
     )
-
-
-@dataclass
-class Button:
-    """discord.ui.Button with callback for Message.items.
-
-    Note:
-        - you should use Link instead of this if you want to send link.
-    """
-
-    callback: MaybeAwaitableFunc[[Interaction], Result]
-    label: str | None = None
-    custom_id: str | None = None
-    disabled: bool = False
-    style: ButtonStyle = ButtonStyle.secondary
-    emoji: str | Emoji | PartialEmoji | None = None
-    row: int | None = None
-
-
-@dataclass
-class Link:
-    """discord.ui.Button for link without callback for Message.items."""
-
-    label: str | None = None
-    disabled: bool = False
-    emoji: str | Emoji | PartialEmoji | None = None
-    row: int | None = None
-    url: str | None = None
-
-
-@dataclass
-class Select:
-    """discord.ui.Select with callback for Message.items.
-
-    Note:
-        - options is keyword only argument.
-    """
-
-    callback: MaybeAwaitableFunc[[Interaction, list[str]], Result]
-    placeholder: str | None = None
-    custom_id: str | None = None
-    min_values: int = 1
-    max_values: int = 1
-    disabled: bool = False
-    row: int | None = None
-    options: Sequence[SelectOption] | None = None
-
-
-@dataclass
-class UserSelect:
-    """discord.ui.UserSelect with callback for Message.items."""
-
-    callback: MaybeAwaitableFunc[[Interaction, list[User | Member]], Result]
-    placeholder: str | None = None
-    custom_id: str | None = None
-    min_values: int = 1
-    max_values: int = 1
-    disabled: bool = False
-    row: int | None = None
-    default_values: Sequence[ValidDefaultValues] | None = None
-
-
-@dataclass
-class RoleSelect:
-    """discord.ui.RoleSelect with callback for Message.items."""
-
-    callback: MaybeAwaitableFunc[[Interaction, list[Role]], Result]
-    placeholder: str | None = None
-    custom_id: str | None = None
-    min_values: int = 1
-    max_values: int = 1
-    disabled: bool = False
-    row: int | None = None
-    default_values: Sequence[ValidDefaultValues] | None = None
-
-
-@dataclass
-class MentionableSelect:
-    """discord.ui.MentionableSelect with callback for Message.items."""
-
-    callback: MaybeAwaitableFunc[[Interaction, list[User | Member | Role]], Result]
-    placeholder: str | None = None
-    custom_id: str | None = None
-    min_values: int = 1
-    max_values: int = 1
-    disabled: bool = False
-    row: int | None = None
-    default_values: Sequence[ValidDefaultValues] | None = None
-
-
-@dataclass
-class ChannelSelect:
-    """discord.ui.ChannelSelect with callback for Message.items."""
-
-    callback: MaybeAwaitableFunc[[Interaction, list[AppCommandChannel | AppCommandThread]], Result]
-    placeholder: str | None = None
-    custom_id: str | None = None
-    min_values: int = 1
-    max_values: int = 1
-    disabled: bool = False
-    row: int | None = None
-    channel_types: Sequence[ChannelType] | None = field(default=None, kw_only=True)
-    default_values: Sequence[ValidDefaultValues] | None = None
-
-
-@dataclass
-class TextDisplay:
-    """discord.ui.TextDisplay for ComponentV2Message.items."""
-
-    content: str
-    id: int | None = None
-
-
-@dataclass
-class Thumbnail:
-    """discord.ui.Thumbnail for Section.accessory."""
-
-    media: str | File | UnfurledMediaItem
-    description: str | None = None
-    spoiler: bool = False
-    id: int | None = None
-
-
-@dataclass
-class MediaGallery:
-    """discord.ui.MediaGallery for ComponentV2Message.items."""
-
-    items: Sequence[MediaGalleryItem]
-    id: int | None = None
-
-
-@dataclass
-class FileDisplay:
-    """discord.ui.File for ComponentV2Message.items."""
-
-    media: str | UnfurledMediaItem | File
-    spoiler: bool = False
-    id: int | None = None
-
-
-@dataclass
-class Separator:
-    """discord.ui.Separator for ComponentV2Message.items."""
-
-    visible: bool = True
-    spacing: SeparatorSpacing = SeparatorSpacing.small
-    id: int | None = None
-
-
-@dataclass
-class ActionRow:
-    """discord.ui.ActionRow for ComponentV2Message.items."""
-
-    items: Sequence[ActionRowItemType]
-    id: int | None = None
-
-
-@dataclass
-class Section:
-    """discord.ui.Section for ComponentV2Message.items."""
-
-    items: Sequence[TextDisplay | str]
-    accessory: Thumbnail | Button | Link
-    id: int | None = None
-
-
-@dataclass
-class Container:
-    """discord.ui.Container for ComponentV2Message.items."""
-
-    items: Sequence[ContainerItemType]
-    accent_color: Colour | int | None = None
-    spoiler: bool = False
-    id: int | None = None
-
-
-_V2_TOP_LEVEL_TYPES = (ActionRow, Container, FileDisplay, MediaGallery, Section, Separator, TextDisplay)
-
-
-def _is_v2_top_level_item(item: object) -> bool:
-    """Return whether an item requires a Component V2 message and LayoutView."""
-    return isinstance(item, _V2_TOP_LEVEL_TYPES)
-
-
-def is_sequence_v2_item(items: Sequence[object]) -> TypeIs[Sequence[V2ItemType]]:
-    """Check any items are Component V2 Item."""
-    return any(_is_v2_top_level_item(item) for item in items)
-
-
-if TYPE_CHECKING:
-    type LegacyItemType = Button | Link | Select | UserSelect | RoleSelect | MentionableSelect | ChannelSelect
-    type ActionRowItemType = LegacyItemType
-    type ContainerItemType = ActionRow | Section | TextDisplay | MediaGallery | FileDisplay | Separator
-    type V2ItemType = ActionRow | Section | TextDisplay | MediaGallery | FileDisplay | Separator | Container
-    type CreateItemType = LegacyItemType | V2ItemType
-    type ItemType = CreateItemType
 
 
 class ModelBase:

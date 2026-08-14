@@ -5,20 +5,19 @@ from typing import TYPE_CHECKING, Protocol, TypedDict
 
 from discord import DiscordException, Interaction, InteractionResponseType, Message as DiscordMessage
 
-from .model import (
+from .item import (
     ActionRow,
     Button,
     ChannelSelect,
-    ComponentV2Message,
     Container,
-    LegacyMessage,
+    InteractiveItem,
     MentionableSelect,
     RoleSelect,
     Section,
     Select,
     UserSelect,
 )
-from .result import _ResultTypeEnum
+from .model import ComponentV2Message, LegacyMessage
 
 if TYPE_CHECKING:
     from asyncio import Task
@@ -29,8 +28,8 @@ if TYPE_CHECKING:
     from discord.abc import Messageable
     from discord.ui import LayoutView, View
 
-    from .model import ItemType, MessageKwargs, ModelBase
-    from .result import Result
+    from .item import ItemType
+    from .model import MessageKwargs
     from .view import _ViewType
 
     type Sendable = Interaction | Messageable
@@ -57,21 +56,32 @@ def view_can_produce_result(view: _ViewType) -> bool:
 
 def items_can_produce_result(items: Sequence[ItemType]) -> bool:
     """Return whether configured items contain an enabled flow callback."""
-    for item in items:
-        if (
+    return any(
+        (
             (
-                isinstance(item, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect))
-                and not item.disabled
+                # interactive item and correct type and enabled.
+                isinstance(item, InteractiveItem)
+                and isinstance(item.item, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect))
+                and not item.item.disabled
             )
-            or (isinstance(item, (ActionRow, Container)) and items_can_produce_result(item.items))
-            or (isinstance(item, Section) and isinstance(item.accessory, Button) and not item.accessory.disabled)
-        ):
-            return True
-    return False
+            or (
+                # item is container like, and any children are enabled flow callback.
+                isinstance(item, (ActionRow, Container)) and items_can_produce_result(item.items)
+            )
+            or (
+                # item have a interactive accessory and enabled.
+                isinstance(item, Section)
+                and isinstance(item.accessory, InteractiveItem)
+                and isinstance(item.accessory.item, Button)
+                and not item.accessory.item.disabled
+            )
+        )
+        for item in items
+    )
 
 
 class _Editable(Protocol):
-    channel: Messageable
+    id: int
 
     async def edit(
         self,
@@ -143,8 +153,6 @@ def into_edit_kwargs(kwargs: MessageKwargs, *, components_v2: bool = False) -> _
     if components_v2:
         kw['content'] = None
         kw['embeds'] = ()
-        if 'attachments' not in kw:
-            kw['attachments'] = ()
     return kw
 
 
@@ -174,7 +182,7 @@ async def send_helper(
     view: _ViewType | None,
     edit: _Editable | None,
 ) -> _Editable:
-    """Helper function to send message. use messageable or interaction."""
+    """Send or edit a flow message and return the actual Discord message."""
     kwargs = message._to_dict()
     if view is not None:
         kwargs['view'] = view
@@ -229,60 +237,6 @@ async def send_helper(
         msg = await messageable.send(delete_after=delete_after, **into_send_kwargs(kwargs))  # type: ignore[reportArgumentType, arg-type]
     # type-ignore: return type is Message, InteractionMessage or WebhookMessage, which are also _Editable
     return msg  # type: ignore[reportReturnType, return-value]
-
-
-async def exec_result(
-    view: _ViewType,
-    result: Result,
-    edit: _Editable,
-    *,
-    has_pending_external_results: bool = False,
-) -> tuple[ModelBase, Sendable] | None:
-    """Exec result.
-
-    Args:
-        view (_View): View to set result.
-        result (Result): Result to exec.
-        edit (_Editable): Target to edit.
-        has_pending_external_results (bool): Whether another external result can still update the flow.
-
-    Raises:
-        ValueError: `result._interaction` is None.
-        RuntimeError: If `result._type` is CONTINUE or FINISH, `messageable` is an Interaction,
-            and its response has not been acknowledged (e.g., `defer()` or `send_message()`).
-
-    Returns:
-        tuple[ModelBase, Interaction | Messageable] | None: If the result indicates a model transition,
-            returns the new model and the messageable context. Otherwise, returns None.
-    """
-    if result._interaction is not None:
-        messageable = result._interaction
-    else:
-        raise ValueError('result._interaction is None.')
-
-    match result._type:
-        case _ResultTypeEnum.MESSAGE:
-            assert result._message is not None
-            msg = result._message
-            view.clear_items()
-            view.set_items(msg.items or ())  # type: ignore[reportArgumentType,arg-type]
-            view._reset_fut()
-            await send_helper(messageable, msg, view, edit)
-            if not view_can_produce_result(view) and not has_pending_external_results:
-                view.stop()
-            return None
-
-        case _ResultTypeEnum.MODEL:
-            assert result._model is not None
-            view.stop()
-            return (result._model, messageable)
-
-        case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
-            if isinstance(messageable, Interaction) and not messageable.response.is_done():
-                raise RuntimeError('Callback MUST consume interaction.')
-            if result._is_end:
-                view.stop()
-            return None
 
 
 async def force_cancel_tasks(tasks: Iterable[Task[Any]]) -> None:

@@ -4,7 +4,7 @@ from os import getenv
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Result
+from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Result
 
 TREE_STRING = """
 tree of this example
@@ -48,11 +48,11 @@ class Model(ModelBase):
             disable_items=True,
         )
 
-    def get_children(self, key: str) -> Button:
+    def get_children(self, key: str) -> InteractiveButton:
         def children(_: Interaction) -> Result:
             return Result.next_model(model=Model(key))
 
-        return Button(label=key, callback=children)
+        return Button(label=key).on(callback=children)
 
 
 class MyClient(Client):
