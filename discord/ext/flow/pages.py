@@ -1,12 +1,26 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, NamedTuple, cast, overload
 
 from discord.utils import maybe_coroutine
 
 from .modal import ModalConfig, TextInput, send_modal
-from .model import Button, Message
+from .model import (
+    ActionRow,
+    Button,
+    ChannelSelect,
+    ComponentV2Message,
+    Container,
+    LegacyMessage,
+    MentionableSelect,
+    RoleSelect,
+    Section,
+    Select,
+    UserSelect,
+)
 from .result import Result, _ResultTypeEnum
+from .util import items_can_produce_result
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -16,10 +30,10 @@ if TYPE_CHECKING:
     from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
-    from .model import ItemType
+    from .model import ActionRowItemType, ContainerItemType, LegacyItemType, V2ItemType
 
 
-__all__ = ('Paginator', 'paginator')
+__all__ = ('ComponentV2Paginator', 'Paginator', 'PaginatorControls', 'paginator')
 
 
 FIRST_EMOJI = '\N{BLACK LEFT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f'
@@ -28,91 +42,62 @@ NEXT_EMOJI = '\N{BLACK RIGHT-POINTING TRIANGLE}\ufe0f'
 LAST_EMOJI = '\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f'
 
 
-class Paginator[T]:
-    """Paginator. This class is used to paginate messages.
+class PaginatorControls(NamedTuple):
+    """Navigation buttons supplied to a Component V2 paginator message builder."""
 
-    You should use `paginator` decorator and return this class instance.
+    first: Button
+    previous: Button
+    page: Button
+    next: Button
+    last: Button
 
-    Args:
-        message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int], Message]):
-            generate message from separated values.
-            Arguments are Separated values, current page number and max page number.
-        values (Sequence[T]): values to paginate.
-        per_page (int, optional): items per page. Defaults to 10.
-        start_page (int, optional): start page number. Defaults to 0.
-        row (int, optional): row number of control buttons. Defaults to 4.
-    """
 
-    message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], Message]
+def _result_finishes_pagination(result: Result) -> bool:
+    if result._type in (_ResultTypeEnum.MODEL, _ResultTypeEnum.FINISH):
+        return True
+    if result._type != _ResultTypeEnum.MESSAGE or result._message is None:
+        return False
+    message = result._message
+    return message.disable_items or not message.items or not items_can_produce_result(message.items)
+
+
+class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
     values: tuple[T, ...]
     per_page: int
     max_page: int
     current_page: int = 0
     modal_tasks: list[ExternalResultTask]
 
-    def __init__(
-        self,
-        message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], Message],
-        values: Sequence[T],
-        per_page: int = 10,
-        start_page: int = 0,
-        row: int = 4,
-    ) -> None:
-        self.message_builder = message_builder
+    def __init__(self, values: Sequence[T], per_page: int, start_page: int) -> None:
         self.values = tuple(values)
         self.current_page = start_page
         self.per_page = per_page
         div, mod = divmod(len(values), per_page)
         self.max_page = div + (mod != 0)
-        self.row = row
         self.modal_tasks = []
 
-    async def _message(self, *, edit_original: bool = False) -> Message:
-        msg = await maybe_coroutine(
-            self.message_builder,
-            self.values[self.per_page * self.current_page : self.per_page * (self.current_page + 1)],
-            self.current_page,
-            self.max_page,
-        )
-        items: list[ItemType] = []
-        if msg.items is not None:
-            for item in msg.items:
-                if hasattr(item, 'callback'):
-                    # type safe, because we are sure that item has callback attribute and this is not change type hint.
-                    item.callback = self._finalize_modal(item.callback)  # type: ignore[reportUnknownMemberType, reportArgumentType, reportAttributeAccessIssue]
-                items.append(item)
-        if len(items) > 20:
-            raise ValueError('Message.items must be less than 20')
+    async def _message(self, *, edit_original: bool = False) -> M:
+        raise NotImplementedError
 
+    def _create_controls(self, *, row: int | None = None) -> PaginatorControls:
         label = f'{self.current_page + 1}/{self.max_page}' if self.max_page > 0 else '1/1'
 
         not_paging = self.max_page == 0
         is_first_page = not_paging or self.current_page == 0
         is_final_page = not_paging or self.current_page == self.max_page - 1
 
-        control_items: tuple[Button, ...] = (
-            Button(emoji=FIRST_EMOJI, row=self.row, disabled=is_first_page, callback=self._go_to_first_page),
-            Button(emoji=PREVIOUS_EMOJI, row=self.row, disabled=is_first_page, callback=self._go_to_previous_page),
-            Button(label=label, row=self.row, disabled=not_paging, callback=self._go_to_page),
-            Button(emoji=NEXT_EMOJI, row=self.row, disabled=is_final_page, callback=self._go_to_next_page),
-            Button(emoji=LAST_EMOJI, row=self.row, disabled=is_final_page, callback=self._go_to_last_page),
+        return PaginatorControls(
+            first=Button(emoji=FIRST_EMOJI, row=row, disabled=is_first_page, callback=self._go_to_first_page),
+            previous=Button(emoji=PREVIOUS_EMOJI, row=row, disabled=is_first_page, callback=self._go_to_previous_page),
+            page=Button(label=label, row=row, disabled=not_paging, callback=self._go_to_page),
+            next=Button(emoji=NEXT_EMOJI, row=row, disabled=is_final_page, callback=self._go_to_next_page),
+            last=Button(emoji=LAST_EMOJI, row=row, disabled=is_final_page, callback=self._go_to_last_page),
         )
-
-        return msg._replace(items=tuple(items) + control_items, edit_original=edit_original or msg.edit_original)
 
     def _finalize_modal[**P](self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
         async def finalize(*args: P.args, **kwargs: P.kwargs) -> Result:
             result = await maybe_coroutine(callback, *args, **kwargs)
-            if (
-                (
-                    result._type in (_ResultTypeEnum.MODEL, _ResultTypeEnum.FINISH)
-                ) or (
-                    result._type == _ResultTypeEnum.MESSAGE
-                    and result._message is not None
-                    and (not result._message.items or result._message.disable_items)
-                )
-            ):  # fmt: skip
-                # it is stop view and pagination is finished. so, we can stop all modals.
+            if _result_finishes_pagination(result):
                 for task in self.modal_tasks:
                     task.cancel()
             return result
@@ -158,18 +143,138 @@ class Paginator[T]:
         return Result.send_message(message=await self._message(edit_original=True))
 
 
-def paginator[**P](func: MaybeAwaitableFunc[P, Paginator[Any]]) -> Callable[P, Awaitable[Message]]:
-    """Decorator to paginate message. This decorator wraps function in ModelBase.message.
+class Paginator[T](_BasePaginator[T, LegacyMessage]):
+    """Paginator for legacy messages.
+
+    You should use `paginator` decorator and return this class instance.
 
     Args:
-        func (MaybeAwaitableFunc[[S], Paginator[Any]]): function to generate Paginator.
-
-    Returns:
-        Callable[[S], Awaitable[Message]]: wrapped function.
-
+        message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int], LegacyMessage]):
+            generate message from separated values.
+            Arguments are Separated values, current page number and max page number.
+        values (Sequence[T]): values to paginate.
+        per_page (int, optional): items per page. Defaults to 10.
+        start_page (int, optional): start page number. Defaults to 0.
+        row (int, optional): row number of control buttons. Defaults to 4.
     """
 
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Message:
-        return await (await maybe_coroutine(func, *args, **kwargs))._message()
+    message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], LegacyMessage]
+
+    def __init__(
+        self,
+        message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int], LegacyMessage],
+        values: Sequence[T],
+        per_page: int = 10,
+        start_page: int = 0,
+        row: int = 4,
+    ) -> None:
+        super().__init__(values, per_page, start_page)
+        self.message_builder = message_builder
+        self.row = row
+
+    async def _message(self, *, edit_original: bool = False) -> LegacyMessage:
+        msg = await maybe_coroutine(
+            self.message_builder,
+            self.values[self.per_page * self.current_page : self.per_page * (self.current_page + 1)],
+            self.current_page,
+            self.max_page,
+        )
+        items: list[LegacyItemType] = []
+        if msg.items is not None:
+            for item in msg.items:
+                if isinstance(item, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)):
+                    item = replace(item, callback=self._finalize_modal(item.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                items.append(item)
+        if len(items) > 20:
+            raise ValueError('LegacyMessage.items must be less than 20')
+
+        return msg._replace(
+            items=(*items, *self._create_controls(row=self.row)),
+            edit_original=edit_original or msg.edit_original,
+        )
+
+
+class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
+    """Paginator whose controls can be placed in a Component V2 layout.
+
+    You should use `paginator` decorator and return this class instance. The message builder receives named navigation
+    controls as its fourth argument. Place them in one or more `ActionRow` objects or use individual buttons as
+    `Section` accessories.
+
+    Args:
+        message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int, PaginatorControls], ComponentV2Message]):
+            Generate a Component V2 message from separated values, the zero-based current page number, the number of
+            pages, and the navigation controls.
+        values (Sequence[T]): values to paginate.
+        per_page (int, optional): items per page. Defaults to 10.
+        start_page (int, optional): start page number. Defaults to 0.
+    """
+
+    message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int, PaginatorControls], ComponentV2Message]
+
+    def __init__(
+        self,
+        message_builder: MaybeAwaitableFunc[[tuple[T, ...], int, int, PaginatorControls], ComponentV2Message],
+        values: Sequence[T],
+        per_page: int = 10,
+        start_page: int = 0,
+    ) -> None:
+        super().__init__(values, per_page, start_page)
+        self.message_builder = message_builder
+
+    async def _message(self, *, edit_original: bool = False) -> ComponentV2Message:
+        msg = await maybe_coroutine(
+            self.message_builder,
+            self.values[self.per_page * self.current_page : self.per_page * (self.current_page + 1)],
+            self.current_page,
+            self.max_page,
+            self._create_controls(),
+        )
+        items = tuple(self._finalize_v2_item(item) for item in msg.items)
+        return msg._replace(items=items, edit_original=edit_original or msg.edit_original)
+
+    def _finalize_container_item(self, item: ContainerItemType) -> ContainerItemType:
+        if isinstance(item, ActionRow):
+            items: list[ActionRowItemType] = []
+            for child in item.items:
+                if isinstance(child, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)):
+                    child = replace(child, callback=self._finalize_modal(child.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                items.append(child)
+            return replace(item, items=items)
+        if isinstance(item, Section) and isinstance(item.accessory, Button):
+            return replace(
+                item,
+                accessory=replace(item.accessory, callback=self._finalize_modal(item.accessory.callback)),
+            )
+        return item
+
+    def _finalize_v2_item(self, item: V2ItemType) -> V2ItemType:
+        if isinstance(item, Container):
+            return replace(item, items=tuple(self._finalize_container_item(child) for child in item.items))
+        return self._finalize_container_item(item)
+
+
+@overload
+def paginator[**P](
+    func: MaybeAwaitableFunc[P, Paginator[Any]],
+) -> Callable[P, Awaitable[LegacyMessage]]: ...
+
+
+@overload
+def paginator[**P](
+    func: MaybeAwaitableFunc[P, ComponentV2Paginator[Any]],
+) -> Callable[P, Awaitable[ComponentV2Message]]: ...
+
+
+def paginator[**P](
+    func: MaybeAwaitableFunc[P, Any],
+) -> Callable[P, Awaitable[Any]]:
+    """Wrap a function returning a legacy or Component V2 paginator for use as `ModelBase.message`."""
+
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> ComponentV2Message | LegacyMessage:
+        paginator_instance = cast(
+            'Paginator[Any] | ComponentV2Paginator[Any]', await maybe_coroutine(func, *args, **kwargs)
+        )
+        return await paginator_instance._message()
 
     return wrapper

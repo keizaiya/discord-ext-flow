@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from discord import Interaction
 
-    from .model import Message, ModelBase
+    from .model import ComponentV2Message, LegacyMessage, ModelBase
 
 
 __all__ = ('Result',)
@@ -26,16 +26,20 @@ class Result:
 
     _type: _ResultTypeEnum
     _model: ModelBase | None = None
-    _message: Message | None = None
+    _message: ComponentV2Message | LegacyMessage | None = None
     _interaction: Interaction | None = None
     _is_end: bool = False
 
     @classmethod
-    def send_message(cls, message: Message, interaction: Interaction | None = None) -> Result:
+    def send_message(
+        cls,
+        message: ComponentV2Message | LegacyMessage,
+        interaction: Interaction | None = None,
+    ) -> Result:
         """Send message and same model.
 
         Args:
-            message (Message): message to send.
+            message (ComponentV2Message | LegacyMessage): message to send.
             interaction (Interaction, optional): new interaction to send message. Defaults to None.
         """
         return Result(_type=_ResultTypeEnum.MESSAGE, _message=message, _interaction=interaction)

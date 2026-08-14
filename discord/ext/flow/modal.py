@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from typing import Self
 
     from discord import Interaction
+    from discord.ui.view import BaseView
     from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
@@ -38,9 +39,10 @@ __all__ = ('ModalConfig', 'TextInput', 'send_modal')
 
 @dataclass
 class TextInput:
-    """Text input config for modal. see discord.ui.TextInput."""
+    """Text input config for a modal Label. See discord.ui.Label and discord.ui.TextInput."""
 
     label: str
+    description: str | None = None
     style: TextStyle = TextStyle.short
     custom_id: str | None = None
     placeholder: str | None = None
@@ -49,10 +51,11 @@ class TextInput:
     min_length: int | None = None
     max_length: int | None = None
     row: int | None = None
+    id: int | None = None
+    label_id: int | None = None
 
 
 class TextInputKWargs(TypedDict, total=False):
-    label: str
     custom_id: str
     style: TextStyle
     placeholder: str | None
@@ -61,6 +64,14 @@ class TextInputKWargs(TypedDict, total=False):
     min_length: int | None
     max_length: int | None
     row: int | None
+    id: int | None
+
+
+class LabelKWargs(TypedDict, total=False):
+    text: str
+    description: str | None
+    component: ui.Item[BaseView]
+    id: int | None
 
 
 @dataclass
@@ -80,6 +91,7 @@ class ModalConfigKWargs(TypedDict, total=False):
 
 class _InnerModal(ui.Modal):
     fut: Future[Result]
+    text_inputs: tuple[ui.TextInput[Self], ...]
 
     def __init__(self, config: ModalConfig, text_inputs: TI1To5, callback: CT1To5) -> None:
         kwargs: ModalConfigKWargs = {'title': config.title, 'timeout': config.timeout}
@@ -88,9 +100,9 @@ class _InnerModal(ui.Modal):
         super().__init__(**kwargs)
         self.callback = callback
         self.fut = get_running_loop().create_future()
+        children: list[ui.TextInput[Self]] = []
         for text_input in text_inputs:
             ti_kwargs: TextInputKWargs = {
-                'label': text_input.label,
                 'style': text_input.style,
                 'placeholder': text_input.placeholder,
                 'default': text_input.default,
@@ -98,20 +110,41 @@ class _InnerModal(ui.Modal):
                 'min_length': text_input.min_length,
                 'max_length': text_input.max_length,
                 'row': text_input.row,
+                'id': text_input.id,
             }
             if text_input.custom_id is not None:
                 ti_kwargs['custom_id'] = text_input.custom_id
-            self.add_item(ui.TextInput(**ti_kwargs))
+            child: ui.TextInput[Self] = ui.TextInput(**ti_kwargs)
+            label_kwargs: LabelKWargs = {
+                'text': text_input.label,
+                'description': text_input.description,
+                'component': child,
+                'id': text_input.label_id,
+            }
+            self.add_item(ui.Label(**label_kwargs))
+            children.append(child)
+        self.text_inputs = tuple(children)
 
     async def on_submit(self, interaction: Interaction) -> None:
-        children: list[ui.TextInput[Self]] = []
-        for child in self.children:
-            assert isinstance(child, ui.TextInput)
-            children.append(child)
-        results = tuple(child.value for child in children)
-        result = await maybe_coroutine(self.callback, interaction, results)  # type: ignore[reportGeneralTypeIssues, arg-type]
-        self.fut.set_result(result)
-        self.stop()
+        if self.fut.done():
+            self.stop()
+            return
+        results = tuple(child.value for child in self.text_inputs)
+        try:
+            result = await maybe_coroutine(self.callback, interaction, results)  # type: ignore[reportGeneralTypeIssues, arg-type]
+        except BaseException as exception:
+            if not self.fut.done():
+                self.fut.set_exception(exception)
+            raise
+        else:
+            if not self.fut.done():
+                self.fut.set_result(result)
+        finally:
+            self.stop()
+
+    async def on_timeout(self) -> None:
+        if not self.fut.done():
+            self.fut.cancel()
 
     async def _wait(self) -> Result:
         return await self.fut

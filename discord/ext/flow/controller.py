@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import sys
-from asyncio import Event
+from asyncio import FIRST_COMPLETED, Event, create_task, wait
 from contextlib import AbstractContextManager, AsyncExitStack
 from contextvars import ContextVar
+from itertools import chain
 from logging import getLogger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
+from discord import ui
 from discord.utils import maybe_coroutine
 
 from .external_task import ExternalResultTask, ExternalTaskLifeTime
+from .model import ComponentV2Message, Message
 from .result import Result
-from .util import exec_result, force_cancel_tasks, send_helper, wait_first_completed_external_result_task
-from .view import _View
+from .util import (
+    exec_result,
+    force_cancel_tasks,
+    send_helper,
+    view_can_produce_result,
+)
+from .view import _ViewType, create_view
 
 if TYPE_CHECKING:
     from asyncio import Task
+    from collections.abc import Iterator
     from contextvars import Token
     from types import TracebackType
     from typing import Self
@@ -59,6 +68,124 @@ class _AutoResetControllerContext:
 
     def __exit__(self, *args: object) -> None:
         controller_var.reset(self.token)
+
+
+class _CompletedResult(NamedTuple):
+    result: Result
+    source: ExternalResultTask | None
+
+
+class _ResultBatch(NamedTuple):
+    results: Iterator[_CompletedResult]
+    exceptions: tuple[Exception, ...] = ()
+    base_exceptions: tuple[BaseException, ...] = ()
+    view_finished: bool = False
+    exhausted: bool = False
+
+
+class _ResultWaiter:
+    def __init__(self, controller: Controller, view: _ViewType) -> None:
+        self.controller = controller
+        self.view = view
+        self.external_tasks: set[ExternalResultTask] = set()
+        self.view_result_task: Task[Result] | None = None
+        self.view_finished_task = create_task(view.wait(), name='flow-view-finished')
+        self.task_added = self._create_task_added_waiter()
+
+    def _create_task_added_waiter(self) -> Task[bool]:
+        return create_task(self.controller._external_task_event.wait(), name='flow-external-task-added')
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        _exception_type: type[BaseException] | None,
+        _exception: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.controller.external_tasks |= self.external_tasks
+        await force_cancel_tasks(
+            task
+            for task in (self.view_result_task, self.view_finished_task, self.task_added)
+            if task is not None and not task.done()
+        )
+
+    async def _take_registered_tasks(self) -> None:
+        if self.controller.external_tasks:
+            self.external_tasks |= self.controller.external_tasks
+            self.controller.external_tasks = set()
+        if self.controller._external_task_event.is_set() or self.task_added.done():
+            self.controller._external_task_event.clear()
+            if not self.task_added.done():
+                await force_cancel_tasks((self.task_added,))
+            self.task_added = self._create_task_added_waiter()
+
+    async def _sync_view_result_task(self) -> None:
+        if view_can_produce_result(self.view):
+            if self.view_result_task is None:
+                self.view_result_task = create_task(self.view._wait(), name='flow-view-result')
+            return
+        if self.view_result_task is not None and not self.view_result_task.done():
+            await force_cancel_tasks((self.view_result_task,))
+            self.view_result_task = None
+
+    def has_pending_external_result(self) -> bool:
+        tasks = self.external_tasks | self.controller.external_tasks
+        return any(not task.task.cancelled() and not task.task.cancelling() for task in tasks)
+
+    def _collect_external_results(self) -> _ResultBatch:
+        results: list[_CompletedResult] = []
+        exceptions: list[Exception] = []
+        base_exceptions: list[BaseException] = []
+        for task in tuple(self.external_tasks):
+            if not task.done():
+                continue
+            if task.task.cancelled():
+                self.external_tasks.remove(task)
+                continue
+            try:
+                result = task.result()
+            except Exception as exception:  # noqa: BLE001
+                self.external_tasks.remove(task)
+                exceptions.append(exception)
+            except BaseException as exception:  # noqa: BLE001
+                self.external_tasks.remove(task)
+                base_exceptions.append(exception)
+            else:
+                results.append(_CompletedResult(result, source=task))
+        return _ResultBatch(self._consume_results(tuple(results)), tuple(exceptions), tuple(base_exceptions))
+
+    def _consume_results(self, results: tuple[_CompletedResult, ...]) -> Iterator[_CompletedResult]:
+        for completed in results:
+            if completed.source is not None:
+                self.external_tasks.remove(completed.source)
+            yield completed
+
+    async def wait(self) -> _ResultBatch:
+        await self._take_registered_tasks()
+        await self._sync_view_result_task()
+        if self.view_result_task is None and not self.has_pending_external_result():
+            return _ResultBatch(iter(()), exhausted=True)
+
+        wait_for: set[Task[object]] = set(self._external_task_handles())
+        wait_for.update((self.view_finished_task, self.task_added))
+        if self.view_result_task is not None:
+            wait_for.add(self.view_result_task)
+        await wait(wait_for, return_when=FIRST_COMPLETED)
+
+        if self.view_finished_task.done():
+            return _ResultBatch(iter(()), view_finished=True)
+
+        batch = self._collect_external_results()
+        if self.view_result_task is not None and self.view_result_task.done():
+            results = chain(batch.results, (_CompletedResult(self.view_result_task.result(), source=None),))
+            self.view_result_task = None
+            return _ResultBatch(results, batch.exceptions, batch.base_exceptions)
+        return batch
+
+    def _external_task_handles(self) -> set[Task[Result]]:
+        return {task.task for task in self.external_tasks}
 
 
 def create_external_result(
@@ -168,70 +295,63 @@ class Controller:
     ) -> tuple[ModelBase, Sendable, _Editable] | None:
         await maybe_coroutine(model.before_invoke)
         msg = await maybe_coroutine(model.message)
+        if not isinstance(msg, (ComponentV2Message, Message)):
+            raise TypeError('ModelBase.message must return ComponentV2Message or LegacyMessage.')
 
         if msg.items is None:
             await send_helper(messageable, msg, None, edit)
             await maybe_coroutine(model.after_invoke)
             return None
 
-        view = _View(config=await maybe_coroutine(model.view_config), items=msg.items, controller=self)
+        view = create_view(config=await maybe_coroutine(model.view_config), items=msg.items, controller=self)
         message = await send_helper(messageable, msg, view, edit)
 
-        self._get_view_wait_task(view)
-        result = await self._wait_result(view, message)
+        if self.external_tasks or view_can_produce_result(view):
+            result = await self._wait_result(view, message)
+        else:
+            view.stop()
+            result = None
         assert view.is_finished()
         view.fut.cancel()
 
         if msg.disable_items:
-            for child in view.children:
-                child.disabled = True  # type: ignore[reportGeneralTypeIssues, attr-defined]
+            for child in view.walk_children():
+                if isinstance(
+                    child,
+                    (ui.Button, ui.ChannelSelect, ui.MentionableSelect, ui.RoleSelect, ui.Select, ui.UserSelect),
+                ):
+                    child.disabled = True
             await message.edit(view=view)
 
         await maybe_coroutine(model.after_invoke)
 
         return None if result is None else (*result, message)
 
-    def _get_view_wait_task(self, view: _View) -> ExternalResultTask:
-        def done_callback(task: Task[Result]) -> None:
-            if not view.is_finished() and not task.cancelled():
-                self._get_view_wait_task(view)
-
-        # Creates a task that waits for the view to finish or receive an interaction.
-        # Re-registers itself upon completion if not cancelled to continuously wait for the next interaction.
-        task = self.create_external_result(view._wait, name='inner-view-wait', life_time=ExternalTaskLifeTime.MODEL)
-        # Re-create the wait task if the view is still active (not cancelled) after the previous wait completed.
-        task.task.add_done_callback(done_callback)
-        return task
-
-    async def _wait_result(self, view: _View, edit: _Editable) -> tuple[ModelBase, Sendable] | None:
-        tasks: set[ExternalResultTask] = set()
-        try:
+    async def _wait_result(self, view: _ViewType, edit: _Editable) -> tuple[ModelBase, Sendable] | None:
+        async with _ResultWaiter(self, view) as waiter:
             while not view.is_finished():
-                new_tasks, self.external_tasks = self.external_tasks, set()
-                tasks |= new_tasks
+                batch = await waiter.wait()
+                if batch.view_finished:
+                    return None
+                if batch.exhausted:  # if anyone cannot provide any results
+                    view.stop()
+                    return None
 
-                if not tasks:  # wait for new external tasks
-                    await self._external_task_event.wait()
-                    self._external_task_event.clear()
-                    continue
+                if batch.base_exceptions:
+                    raise BaseExceptionGroup('Errors occurred in external tasks', batch.base_exceptions)
+                if batch.exceptions:
+                    await self.on_error(ExceptionGroup('Errors occurred in external tasks', batch.exceptions))
 
-                wait_result = await wait_first_completed_external_result_task(tasks)
-                base_exceptions = [e for t in wait_result.base_exceptions if (e := t.task.exception()) is not None]
-                exceptions = [e for t in wait_result.exceptions if isinstance((e := t.task.exception()), Exception)]
-                if base_exceptions:
-                    raise BaseExceptionGroup('Errors occurred in external tasks', base_exceptions)
-                if exceptions:
-                    await self.on_error(ExceptionGroup('Errors occurred in external tasks', exceptions))
-                tasks -= wait_result.exceptions | wait_result.base_exceptions
-
-                for done in wait_result.done:
-                    tasks.remove(done)
-                    ret = await exec_result(view, done.result(), edit)
+                for completed in batch.results:
+                    ret = await exec_result(
+                        view,
+                        completed.result,
+                        edit,
+                        has_pending_external_results=waiter.has_pending_external_result(),
+                    )
                     if ret is not None or view.is_finished():
                         return ret
-
-        finally:
-            self.external_tasks |= tasks
+        return None
 
     async def on_error(self, exception_group: BaseExceptionGroup) -> None:
         """A Callback that is called when external tasks raised exceptions.
