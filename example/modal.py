@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from os import getenv
+import os
 
 from discord import Client, Embed, Intents, Interaction, TextStyle
 from discord.app_commands import CommandTree
@@ -39,9 +39,11 @@ class EmbedModel(ModelBase):
         return Message(
             embeds=[self.embed],
             items=(
+                # Traditional text input modals.
                 self.edit_title_button(),
                 self.edit_description_button(),
                 self.edit_title_and_description_button(),
+                # Component V2 modal inputs.
                 self.component_v2_inputs_button(),
                 self.entity_selects_button(),
                 self.preferences_button(),
@@ -52,16 +54,19 @@ class EmbedModel(ModelBase):
             ephemeral=True,
         )
 
+    def _redraw(self, interaction: Interaction) -> Result:
+        return Result.send_message(message=self.message(), interaction=interaction)
+
     def edit_title_button(self) -> InteractiveButton:
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             title = TextInput(default=self.embed.title).field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 self.embed.title = title.value
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Edit Title'),
                 (
@@ -73,18 +78,18 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='edit title').on(callback=inner)
+        return Button(label='edit title').on(callback=open_modal)
 
     def edit_description_button(self) -> InteractiveButton:
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             description = TextInput(style=TextStyle.paragraph, default=self.embed.description).field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 self.embed.description = description.value
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Edit Description'),
                 (
@@ -96,20 +101,20 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='edit description').on(callback=inner)
+        return Button(label='edit description').on(callback=open_modal)
 
     def edit_title_and_description_button(self) -> InteractiveButton:
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             title = TextInput(default=self.embed.title).field()
             description = TextInput(style=TextStyle.paragraph, default=self.embed.description).field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 self.embed.title = title.value
                 self.embed.description = description.value
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Edit Title and Description'),
                 (
@@ -125,12 +130,12 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='edit title and description').on(callback=inner)
+        return Button(label='edit title and description').on(callback=open_modal)
 
     def component_v2_inputs_button(self) -> InteractiveButton:
         """Show TextDisplay plus the common native Modal V2 input types."""
 
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             topic = Select(
                 custom_id='topic',
                 options=(
@@ -151,7 +156,7 @@ class EmbedModel(ModelBase):
             ).field()
             confirmed = Checkbox(custom_id='confirmed').field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 selected_topic = topic.value
                 entered_details = details.value
                 uploaded_files = files.value
@@ -161,10 +166,10 @@ class EmbedModel(ModelBase):
                     f'topic={selected_topic!r}; files={len(uploaded_files)}; confirmed={is_confirmed}\n'
                     f'{entered_details}'
                 )
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Component V2 modal inputs'),
                 (
@@ -190,18 +195,18 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='component v2 inputs').on(callback=inner)
+        return Button(label='component v2 inputs').on(callback=open_modal)
 
     def entity_selects_button(self) -> InteractiveButton:
         """Show every entity Select type that v2.7.1 permits inside a Modal Label."""
 
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             users = UserSelect(custom_id='users').field()
             roles = RoleSelect(custom_id='roles').field()
             mentionables = MentionableSelect(custom_id='mentionables').field()
             channels = ChannelSelect(custom_id='channels').field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 selected_users = users.value
                 selected_roles = roles.value
                 selected_mentionables = mentionables.value
@@ -210,10 +215,10 @@ class EmbedModel(ModelBase):
                     f'users={len(selected_users)}, roles={len(selected_roles)}, '
                     f'mentionables={len(selected_mentionables)}, channels={len(selected_channels)}'
                 )
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Entity selects'),
                 (
@@ -228,12 +233,12 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='entity selects').on(callback=inner)
+        return Button(label='entity selects').on(callback=open_modal)
 
     def preferences_button(self) -> InteractiveButton:
         """Show the radio and checkbox-group Modal V2 inputs."""
 
-        async def inner(interaction: Interaction) -> Result:
+        async def open_modal(interaction: Interaction) -> Result:
             priority = RadioGroup(
                 custom_id='priority',
                 options=(
@@ -251,12 +256,12 @@ class EmbedModel(ModelBase):
                 ),
             ).field()
 
-            async def callback(interaction: Interaction) -> Result:
+            async def submit(interaction: Interaction) -> Result:
                 self.embed.description = f'priority={priority.value!r}; categories={categories.value!r}'
-                return Result.send_message(message=self.message(), interaction=interaction)
+                return self._redraw(interaction)
 
             await send_modal(
-                callback,
+                submit,
                 interaction,
                 ModalConfig(title='Preferences'),
                 (
@@ -273,13 +278,13 @@ class EmbedModel(ModelBase):
             )
             return Result.continue_flow()
 
-        return Button(label='preferences').on(callback=inner)
+        return Button(label='preferences').on(callback=open_modal)
 
     def finish_button(self) -> InteractiveButton:
-        async def inner(_: Interaction) -> Result:
+        async def finish(_: Interaction) -> Result:
             return Result.send_message(message=Message(embeds=[self.embed]))
 
-        return Button(label='finish').on(callback=inner)
+        return Button(label='finish').on(callback=finish)
 
 
 class MyClient(Client):
@@ -306,4 +311,4 @@ async def embed(interaction: Interaction, title: str) -> None:
     await Controller(EmbedModel(title)).invoke(interaction)
 
 
-client.run(getenv('TOKEN', ''))
+client.run(os.environ['DISCORD_TOKEN'])

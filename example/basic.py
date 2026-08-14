@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from os import getenv
+import os
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
@@ -126,4 +126,4 @@ async def basic(interaction: Interaction) -> None:
     await Controller(StartModel()).invoke(interaction)
 
 
-client.run(getenv('TOKEN', ''))
+client.run(os.environ['DISCORD_TOKEN'])

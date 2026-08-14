@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from os import getenv
+import os
 from random import randint
 
 from discord import Client, Intents, Interaction
@@ -39,7 +39,7 @@ class Pagination(ModelBase):
         controls: PaginatorControls,
     ) -> ComponentV2Message:
         item_rows = tuple(
-            ActionRow(items=tuple(self.button_callback(state) for state in msgs[offset : offset + 5]))
+            ActionRow(items=tuple(self.value_button(state) for state in msgs[offset : offset + 5]))
             for offset in range(0, len(msgs), 5)
         )
         return ComponentV2Message(
@@ -55,7 +55,7 @@ class Pagination(ModelBase):
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> InteractiveButton:
+    def value_button(self, state: int) -> InteractiveButton:
         async def callback(interaction: Interaction) -> Result:
             print(state)
             await interaction.response.defer()
@@ -88,4 +88,4 @@ async def component_v2_pagination(interaction: Interaction) -> None:
     await Controller(Pagination(randint(1, 100))).invoke(interaction)
 
 
-client.run(getenv('TOKEN', ''))
+client.run(os.environ['DISCORD_TOKEN'])
