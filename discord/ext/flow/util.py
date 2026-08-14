@@ -54,30 +54,25 @@ def view_can_produce_result(view: _ViewType) -> bool:
     return any(item.is_dispatchable() and not getattr(item, 'disabled', False) for item in view.walk_children())
 
 
+def _item_can_produce_result(item: ItemType) -> bool:
+    match item:
+        case InteractiveItem(
+            item=(
+                Button() | Select() | UserSelect() | RoleSelect() | MentionableSelect() | ChannelSelect()
+            ) as component
+        ):
+            return not component.disabled
+        case ActionRow(items=items) | Container(items=items):
+            return items_can_produce_result(items)
+        case Section(accessory=InteractiveItem(item=Button() as button)):
+            return not button.disabled
+        case _:
+            return False
+
+
 def items_can_produce_result(items: Sequence[ItemType]) -> bool:
     """Return whether configured items contain an enabled flow callback."""
-    return any(
-        (
-            (
-                # interactive item and correct type and enabled.
-                isinstance(item, InteractiveItem)
-                and isinstance(item.item, (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect))
-                and not item.item.disabled
-            )
-            or (
-                # item is container like, and any children are enabled flow callback.
-                isinstance(item, (ActionRow, Container)) and items_can_produce_result(item.items)
-            )
-            or (
-                # item have a interactive accessory and enabled.
-                isinstance(item, Section)
-                and isinstance(item.accessory, InteractiveItem)
-                and isinstance(item.accessory.item, Button)
-                and not item.accessory.item.disabled
-            )
-        )
-        for item in items
-    )
+    return any(_item_can_produce_result(item) for item in items)
 
 
 class _Editable(Protocol):
@@ -108,7 +103,11 @@ class _SendHelperKWType(TypedDict, total=False):
 
 
 def into_send_kwargs(kwargs: MessageKwargs) -> _SendHelperKWType:
-    """Convert MessageKwargs to send kwargs type."""
+    """Build kwargs accepted by send endpoints.
+
+    Send and edit APIs intentionally use separate converters: Discord names uploaded files differently for edits, and
+    options such as TTS and silent delivery do not belong to the edit path.
+    """
     kw: _SendHelperKWType = {}
     if 'content' in kwargs:
         kw['content'] = kwargs['content']
@@ -138,7 +137,11 @@ class _EditKWType(TypedDict, total=False):
 
 
 def into_edit_kwargs(kwargs: MessageKwargs, *, components_v2: bool = False) -> _EditKWType:
-    """Convert MessageKwargs to Message.edit kwargs type."""
+    """Build kwargs accepted by message edit endpoints.
+
+    Switching an existing legacy message to Component V2 requires clearing content and embeds in the same edit. Files
+    also become the edit API's ``attachments`` argument, which is why send kwargs cannot be reused here.
+    """
     kw: _EditKWType = {}
     if 'content' in kwargs:
         kw['content'] = kwargs['content']
@@ -156,6 +159,58 @@ def into_edit_kwargs(kwargs: MessageKwargs, *, components_v2: bool = False) -> _
     return kw
 
 
+async def _try_edit_interaction_message(
+    interaction: Interaction,
+    message: ComponentV2Message | LegacyMessage,
+    kwargs: MessageKwargs,
+) -> DiscordMessage | None:
+    """Try to acknowledge an interaction by editing the message that triggered it.
+
+    This path is preferred for ``edit_original`` because it performs the edit as the interaction's initial response.
+    Only Discord API failures fall back to another editable target or a send; programming errors still propagate.
+    """
+    if interaction.response.is_done() or interaction.message is None:
+        return None
+    try:
+        await interaction.response.edit_message(
+            **into_edit_kwargs(
+                kwargs,
+                components_v2=isinstance(message, ComponentV2Message),
+            )
+        )
+    except DiscordException:
+        return None
+    return await interaction.original_response()
+
+
+async def _edit_existing_message(
+    editable: _Editable,
+    message: ComponentV2Message | LegacyMessage,
+    kwargs: MessageKwargs,
+) -> _Editable:
+    """Edit the known active message without fetching it first."""
+    return await editable.edit(
+        **into_edit_kwargs(
+            kwargs,
+            components_v2=isinstance(message, ComponentV2Message),
+        )
+    )
+
+
+async def _send_initial_interaction_response(
+    interaction: Interaction,
+    kwargs: MessageKwargs,
+    *,
+    ephemeral: bool,
+) -> DiscordMessage:
+    """Acknowledge an unanswered interaction, then retrieve its editable response message."""
+    await interaction.response.send_message(
+        ephemeral=ephemeral,
+        **into_send_kwargs(kwargs),  # type: ignore[reportArgumentType, arg-type]
+    )
+    return await interaction.original_response()
+
+
 async def _send_after_interaction_response(
     interaction: Interaction,
     message: ComponentV2Message | LegacyMessage,
@@ -163,7 +218,12 @@ async def _send_after_interaction_response(
     *,
     ephemeral: bool,
 ) -> DiscordMessage:
-    """Send after an interaction response while respecting deferred V2 rules."""
+    """Send through an interaction that has already been acknowledged.
+
+    Ordinary acknowledged interactions use a follow-up. A deferred channel response receiving Component V2 content
+    must instead complete the deferred original response by editing it; this also retains the editable interaction
+    message used by ephemeral responses.
+    """
     if (
         isinstance(message, ComponentV2Message)
         and interaction.response.type is InteractionResponseType.deferred_channel_message
@@ -176,67 +236,64 @@ async def _send_after_interaction_response(
     )
 
 
+async def _send_to_messageable(
+    messageable: Messageable,
+    kwargs: MessageKwargs,
+    *,
+    delete_after: float | None,
+) -> DiscordMessage:
+    """Send through a normal Messageable and delegate its deletion timer to discord.py."""
+    return await messageable.send(  # type: ignore[no-any-return]
+        delete_after=delete_after,  # type: ignore[reportArgumentType, arg-type]
+        **into_send_kwargs(kwargs),  # type: ignore[reportArgumentType, arg-type]
+    )
+
+
+async def _schedule_delete(message: DiscordMessage, delete_after: float | None) -> None:
+    """Schedule deletion for an interaction response when requested.
+
+    Messageable sends accept ``delete_after`` directly, while interaction response and follow-up paths require the
+    timer to be attached to the returned message. Edit paths intentionally do not schedule deletion.
+    """
+    if delete_after is not None:
+        await message.delete(delay=delete_after)
+
+
 async def send_helper(
     messageable: Sendable,
     message: ComponentV2Message | LegacyMessage,
     view: _ViewType | None,
     edit: _Editable | None,
 ) -> _Editable:
-    """Send or edit a flow message and return the actual Discord message."""
+    """Send or edit a flow message and return the actual editable Discord message.
+
+    ``edit_original`` first tries an unacknowledged interaction edit, then the known active message, and finally falls
+    back to sending. Whether an interaction has already been acknowledged determines whether that send is an initial
+    response, a follow-up, or completion of a deferred Component V2 response. ``delete_after`` applies only when a new
+    message is sent, matching Discord's separate send and edit APIs.
+    """
     kwargs = message._to_dict()
     if view is not None:
         kwargs['view'] = view
-    msg: DiscordMessage
 
-    # if edit
     if message.edit_original:
-        if (
-            isinstance(messageable, Interaction)
-            and not messageable.response.is_done()
-            and messageable.message is not None
-        ):  # Interaction.message is not None -> can edit
-            try:
-                await messageable.response.edit_message(
-                    **into_edit_kwargs(
-                        kwargs,
-                        components_v2=isinstance(message, ComponentV2Message),
-                    )
-                )
-            except DiscordException:
-                pass  # ignore. and fallback.
-            else:
-                interaction_msg = await messageable.original_response()
-                msg = interaction_msg
-                return msg  # type: ignore[reportReturnType, return-value]
+        if isinstance(messageable, Interaction):
+            interaction_message = await _try_edit_interaction_message(messageable, message, kwargs)
+            if interaction_message is not None:
+                return interaction_message  # type: ignore[reportReturnType, return-value]
         if edit is not None:
-            return await edit.edit(
-                **into_edit_kwargs(
-                    kwargs,
-                    components_v2=isinstance(message, ComponentV2Message),
-                )
-            )
-        # fallback to send message
+            return await _edit_existing_message(edit, message, kwargs)
 
-    # if send
     delete_after = kwargs.get('delete_after', None)
     ephemeral = kwargs.get('ephemeral', False)
     if isinstance(messageable, Interaction):
         if messageable.response.is_done():
             msg = await _send_after_interaction_response(messageable, message, kwargs, ephemeral=ephemeral)
         else:
-            await messageable.response.send_message(
-                ephemeral=ephemeral,
-                **into_send_kwargs(kwargs),  # type: ignore[reportArgumentType, arg-type]
-            )
-            msg = await messageable.original_response()
-
-        if delete_after is not None:
-            await msg.delete(delay=delete_after)
-    else:
-        # type-ignore: can pass None to delete_after
-        msg = await messageable.send(delete_after=delete_after, **into_send_kwargs(kwargs))  # type: ignore[reportArgumentType, arg-type]
-    # type-ignore: return type is Message, InteractionMessage or WebhookMessage, which are also _Editable
-    return msg  # type: ignore[reportReturnType, return-value]
+            msg = await _send_initial_interaction_response(messageable, kwargs, ephemeral=ephemeral)
+        await _schedule_delete(msg, delete_after)
+        return msg  # type: ignore[reportReturnType, return-value]
+    return await _send_to_messageable(messageable, kwargs, delete_after=delete_after)  # type: ignore[reportReturnType, return-value]
 
 
 async def force_cancel_tasks(tasks: Iterable[Task[Any]]) -> None:

@@ -14,6 +14,7 @@ import pytest
 from discord import (
     ChannelType,
     Client,
+    DiscordException,
     File as SendableFile,
     Forbidden,
     Interaction,
@@ -762,6 +763,38 @@ async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
         response.edit_message.assert_awaited_once_with(content='Legacy state')
         edit.edit.assert_not_awaited()
         assert returned is interaction_message
+
+
+@pytest.mark.asyncio
+async def test_interaction_edit_discord_failure_falls_back_to_active_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Discord API edit failure retains the established active-message fallback."""
+    edited_message = _editable()
+    response = SimpleNamespace(
+        is_done=lambda: False,
+        edit_message=AsyncMock(side_effect=DiscordException('edit failed')),
+    )
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.response = response
+            self.message = object()
+
+    interaction = FakeInteraction()
+    edit = SimpleNamespace(edit=AsyncMock(return_value=edited_message))
+    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+
+    returned = await send_helper(
+        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
+        LegacyMessage(content='Updated', edit_original=True),
+        None,
+        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
+    )
+
+    response.edit_message.assert_awaited_once_with(content='Updated')
+    edit.edit.assert_awaited_once_with(content='Updated')
+    assert returned is edited_message
 
 
 @pytest.mark.asyncio
