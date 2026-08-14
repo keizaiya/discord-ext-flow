@@ -93,15 +93,28 @@ class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
             last=Button(emoji=LAST_EMOJI, row=row, disabled=is_final_page).on(callback=self._go_to_last_page),
         )
 
-    def _finalize_modal[**P](self, callback: MaybeAwaitableFunc[P, Result]) -> Callable[P, Awaitable[Result]]:
-        async def finalize(*args: P.args, **kwargs: P.kwargs) -> Result:
+    def _cancel_modal_tasks(self) -> None:
+        for task in self.modal_tasks:
+            task.cancel()
+
+    def _prune_completed_modal_tasks(self) -> None:
+        self.modal_tasks[:] = [task for task in self.modal_tasks if not task.done()]
+
+    def _wrap_with_modal_cleanup[**P](
+        self,
+        callback: MaybeAwaitableFunc[P, Result],
+    ) -> Callable[P, Awaitable[Result]]:
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> Result:
             result = await maybe_coroutine(callback, *args, **kwargs)
             if _result_finishes_pagination(result):
-                for task in self.modal_tasks:
-                    task.cancel()
+                self._cancel_modal_tasks()
             return result
 
-        return finalize
+        return wrapped
+
+    def _current_page_values(self) -> tuple[T, ...]:
+        start = self.per_page * self.current_page
+        return self.values[start : start + self.per_page]
 
     def _set_page_number(self, page_number: int) -> None:
         if 0 <= page_number < self.max_page:
@@ -136,7 +149,7 @@ class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
             ),
         )
         self.modal_tasks.append(task)
-        self.modal_tasks[:] = [t for t in self.modal_tasks if not t.done()]
+        self._prune_completed_modal_tasks()
 
         return Result.continue_flow()
 
@@ -181,7 +194,7 @@ class Paginator[T](_BasePaginator[T, LegacyMessage]):
     async def _message(self, *, edit_original: bool = False) -> LegacyMessage:
         msg = await maybe_coroutine(
             self.message_builder,
-            self.values[self.per_page * self.current_page : self.per_page * (self.current_page + 1)],
+            self._current_page_values(),
             self.current_page,
             self.max_page,
         )
@@ -189,7 +202,7 @@ class Paginator[T](_BasePaginator[T, LegacyMessage]):
         if msg.items is not None:
             for item in msg.items:
                 if isinstance(item, InteractiveItem):
-                    item = item.item.on(callback=self._finalize_modal(item.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                    item = item.item.on(callback=self._wrap_with_modal_cleanup(item.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
                 items.append(item)
         if len(items) > 20:
             raise ValueError('LegacyMessage.items must be less than 20')
@@ -231,7 +244,7 @@ class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
     async def _message(self, *, edit_original: bool = False) -> ComponentV2Message:
         msg = await maybe_coroutine(
             self.message_builder,
-            self.values[self.per_page * self.current_page : self.per_page * (self.current_page + 1)],
+            self._current_page_values(),
             self.current_page,
             self.max_page,
             self._create_controls(),
@@ -244,13 +257,13 @@ class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
             items: list[ActionRowItemType] = []
             for child in item.items:
                 if isinstance(child, InteractiveItem):
-                    child = child.item.on(callback=self._finalize_modal(child.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
+                    child = child.item.on(callback=self._wrap_with_modal_cleanup(child.callback))  # type: ignore[reportArgumentType,arg-type] # noqa: PLW2901
                 items.append(child)
             return replace(item, items=items)
         if isinstance(item, Section) and isinstance(item.accessory, InteractiveItem):
             return replace(
                 item,
-                accessory=item.accessory.item.on(callback=self._finalize_modal(item.accessory.callback)),
+                accessory=item.accessory.item.on(callback=self._wrap_with_modal_cleanup(item.accessory.callback)),
             )
         return item
 
