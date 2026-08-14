@@ -22,7 +22,13 @@ from discord.ext.flow import (
     TextDisplay,
     TextInput,
 )
-from discord.ext.flow.controller import Controller, _CompletedResult, _ResultBatch, _ResultWaiter
+from discord.ext.flow.controller import (
+    Controller,
+    _CompletedResult,
+    _ResultAction,
+    _ResultBatch,
+    _ViewResultWaiter,
+)
 from discord.ext.flow.modal import _InnerModal
 from discord.ext.flow.util import _Editable, force_cancel_tasks
 from discord.ext.flow.view import create_view
@@ -310,7 +316,7 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
     view_config: ViewConfig = {'timeout': 42.0}
     initial_view = create_view(view_config, initial_config.items or (), controller)
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=initial_message))
-    await controller._send_message(_messageable(), initial_config, initial_view, None)
+    await controller._send_and_activate_message(_messageable(), initial_config, initial_view, None)
 
     monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
     monkeypatch.setattr(controller_module, 'send_helper', util_module.send_helper)
@@ -320,12 +326,12 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
         edit_original=True,
     )
 
-    outcome = await controller._exec_result(
+    outcome = await controller._apply_result(
         initial_view,
         Result.send_message(replacement, interaction=interaction),
     )
 
-    assert outcome.switched_view
+    assert outcome.action is _ResultAction.REPLACE_VIEW
     response.edit_message.assert_awaited_once()
     assert events == ['disable-initial']
     assert _first_button(initial_view).disabled
@@ -579,7 +585,7 @@ async def test_result_waiter_consumes_external_results_as_they_are_yielded() -> 
     await asyncio.gather(*(task.task for task in tasks))
     view = create_view({}, (TextDisplay('Waiting'),), controller)
 
-    async with _ResultWaiter(controller, view) as waiter:
+    async with _ViewResultWaiter(controller, view) as waiter:
         batch = await waiter.wait()
 
         assert isinstance(batch, tuple)
@@ -618,7 +624,7 @@ async def test_result_waiter_appends_view_timeout_after_completed_results() -> N
     await view._set_result(view_result, interaction)
     view.stop()
 
-    async with _ResultWaiter(controller, view) as waiter:
+    async with _ViewResultWaiter(controller, view) as waiter:
         batch = await waiter.wait()
         completed = tuple(batch.results)
 
@@ -643,13 +649,13 @@ async def test_view_timeout_runs_completed_model_transition_before_finishing(
     send_mock = AsyncMock(return_value=_sent())
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
     initial_view = create_view({}, initial_message.items or (), controller)
-    await controller._send_message(_messageable(), initial_message, initial_view, None)
+    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
 
-    async def finish_wait(waiter: _ResultWaiter) -> _ResultBatch:
+    async def finish_wait(waiter: _ViewResultWaiter) -> _ResultBatch:
         waiter.view.stop()
         return _ResultBatch(iter((_CompletedResult(result, source=None),)), view_finished=True)
 
-    monkeypatch.setattr(_ResultWaiter, 'wait', finish_wait)
+    monkeypatch.setattr(_ViewResultWaiter, 'wait', finish_wait)
 
     transition = await controller._wait_result(initial_view)
 
@@ -687,10 +693,10 @@ async def test_view_timeout_switches_to_completed_external_message_replacement(
 
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
     initial_view = create_view({}, initial_message.items or (), controller)
-    await controller._send_message(_messageable(), initial_message, initial_view, None)
-    original_wait = _ResultWaiter.wait
+    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
+    original_wait = _ViewResultWaiter.wait
 
-    async def finish_initial_wait(waiter: _ResultWaiter) -> _ResultBatch:
+    async def finish_initial_wait(waiter: _ViewResultWaiter) -> _ResultBatch:
         if waiter.view is initial_view:
             await waiter._take_registered_tasks()
             waiter.view.stop()
@@ -703,7 +709,7 @@ async def test_view_timeout_switches_to_completed_external_message_replacement(
             )
         return await original_wait(waiter)
 
-    monkeypatch.setattr(_ResultWaiter, 'wait', finish_initial_wait)
+    monkeypatch.setattr(_ViewResultWaiter, 'wait', finish_initial_wait)
     waiting = asyncio.create_task(controller._wait_result(initial_view))
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
     await asyncio.sleep(0)
@@ -727,22 +733,22 @@ async def test_continue_result_ignores_a_replaced_view_terminal_state(monkeypatc
     replacement_message = LegacyMessage(items=(Button(label='Replacement').on(callback=_finish),))
     initial_view = create_view({}, initial_message.items or (), controller)
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=_sent()))
-    await controller._send_message(_messageable(), initial_message, initial_view, None)
+    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
     await initial_view._set_result(Result.continue_flow(), interaction)
     continue_result = await initial_view._wait()
 
-    outcome = await controller._exec_result(
+    outcome = await controller._apply_result(
         initial_view,
         Result.send_message(replacement_message, interaction=interaction),
     )
-    continue_outcome = await controller._exec_result(initial_view, continue_result)
+    continue_outcome = await controller._apply_result(initial_view, continue_result)
 
-    assert outcome.switched_view
+    assert outcome.action is _ResultAction.REPLACE_VIEW
     assert initial_view.is_finished()
     assert controller._active_message is not None
     assert controller._active_message.view is not None
     assert not controller._active_message.view.is_finished()
-    assert not continue_outcome.terminal
+    assert continue_outcome.action is _ResultAction.CONTINUE_BATCH
 
     await controller._finalize_active_message()
 
