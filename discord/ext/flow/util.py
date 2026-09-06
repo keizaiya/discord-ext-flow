@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
     from typing import Any
 
-    from discord import AllowedMentions, Attachment, Embed, File
+    from discord import AllowedMentions, Attachment, Embed, File, Poll
     from discord.abc import Messageable
     from discord.ui import LayoutView, View
 
@@ -100,6 +100,7 @@ class _SendHelperKWType(TypedDict, total=False):
     view: LayoutView | View
     suppress_embeds: bool
     silent: bool
+    poll: Poll
 
 
 def into_send_kwargs(kwargs: MessageKwargs) -> _SendHelperKWType:
@@ -125,6 +126,8 @@ def into_send_kwargs(kwargs: MessageKwargs) -> _SendHelperKWType:
         kw['suppress_embeds'] = kwargs['suppress_embeds']
     if 'silent' in kwargs:
         kw['silent'] = kwargs['silent']
+    if 'poll' in kwargs:
+        kw['poll'] = kwargs['poll']
     return kw
 
 
@@ -133,7 +136,7 @@ class _EditKWType(TypedDict, total=False):
     embeds: Sequence[Embed]
     attachments: Sequence[Attachment | File]
     allowed_mentions: AllowedMentions
-    view: LayoutView | View
+    view: LayoutView | View | None
 
 
 def into_edit_kwargs(kwargs: MessageKwargs, *, components_v2: bool = False) -> _EditKWType:
@@ -163,6 +166,7 @@ async def _try_edit_interaction_message(
     interaction: Interaction,
     message: ComponentV2Message | LegacyMessage,
     kwargs: MessageKwargs,
+    view: _ViewType | None,
 ) -> DiscordMessage | None:
     """Try to acknowledge an interaction by editing the message that triggered it.
 
@@ -172,12 +176,12 @@ async def _try_edit_interaction_message(
     if interaction.response.is_done() or interaction.message is None:
         return None
     try:
-        await interaction.response.edit_message(
-            **into_edit_kwargs(
-                kwargs,
-                components_v2=isinstance(message, ComponentV2Message),
-            )
+        edit_kwargs = into_edit_kwargs(
+            kwargs,
+            components_v2=isinstance(message, ComponentV2Message),
         )
+        edit_kwargs['view'] = view
+        await interaction.response.edit_message(**edit_kwargs)
     except DiscordException:
         return None
     return await interaction.original_response()
@@ -187,14 +191,15 @@ async def _edit_existing_message(
     editable: _Editable,
     message: ComponentV2Message | LegacyMessage,
     kwargs: MessageKwargs,
+    view: _ViewType | None,
 ) -> _Editable:
     """Edit the known active message without fetching it first."""
-    return await editable.edit(
-        **into_edit_kwargs(
-            kwargs,
-            components_v2=isinstance(message, ComponentV2Message),
-        )
+    edit_kwargs = into_edit_kwargs(
+        kwargs,
+        components_v2=isinstance(message, ComponentV2Message),
     )
+    edit_kwargs['view'] = view
+    return await editable.edit(**edit_kwargs)
 
 
 async def _send_initial_interaction_response(
@@ -271,6 +276,9 @@ async def send_helper(
     back to sending. Whether an interaction has already been acknowledged determines whether that send is an initial
     response, a follow-up, or completion of a deferred Component V2 response. ``delete_after`` applies only when a new
     message is sent, matching Discord's separate send and edit APIs.
+
+    If an unacknowledged interaction has no source message, editing a supplied active message does not acknowledge the
+    interaction. Callers using that path must consume the interaction separately.
     """
     kwargs = message._to_dict()
     if view is not None:
@@ -278,11 +286,14 @@ async def send_helper(
 
     if message.edit_original:
         if isinstance(messageable, Interaction):
-            interaction_message = await _try_edit_interaction_message(messageable, message, kwargs)
+            interaction_message = await _try_edit_interaction_message(messageable, message, kwargs, view)
             if interaction_message is not None:
                 return interaction_message  # type: ignore[reportReturnType, return-value]
         if edit is not None:
-            return await _edit_existing_message(edit, message, kwargs)
+            try:
+                return await _edit_existing_message(edit, message, kwargs, view)
+            except DiscordException:
+                pass  # ignore. and fallback to send.
 
     delete_after = kwargs.get('delete_after', None)
     ephemeral = kwargs.get('ephemeral', False)

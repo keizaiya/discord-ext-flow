@@ -48,7 +48,7 @@ from discord.ext.flow import (
     create_message,
 )
 from discord.ext.flow.controller import Controller
-from discord.ext.flow.util import _Editable, into_edit_kwargs, send_helper
+from discord.ext.flow.util import _Editable, into_edit_kwargs, into_send_kwargs, send_helper
 from discord.ext.flow.view import _LayoutView, _View, create_view
 
 if TYPE_CHECKING:
@@ -719,6 +719,16 @@ def test_v2_edit_accepts_explicit_empty_file_attachments() -> None:
     assert kwargs['attachments'] == ()
 
 
+def test_legacy_poll_is_forwarded_to_send_kwargs() -> None:
+    """Legacy polls are retained when converting a message for a send endpoint."""
+    poll = Poll('Question?', timedelta(hours=1))
+
+    kwargs = into_send_kwargs(LegacyMessage(poll=poll)._to_dict())
+
+    assert 'poll' in kwargs
+    assert kwargs['poll'] is poll
+
+
 @pytest.mark.parametrize('response_done', [False, True])
 @pytest.mark.asyncio
 async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
@@ -757,10 +767,10 @@ async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
     response.send_message.assert_not_awaited()
     if response_done:
         response.edit_message.assert_not_awaited()
-        edit.edit.assert_awaited_once_with(content='Legacy state')
+        edit.edit.assert_awaited_once_with(content='Legacy state', view=None)
         assert returned is edited_message
     else:
-        response.edit_message.assert_awaited_once_with(content='Legacy state')
+        response.edit_message.assert_awaited_once_with(content='Legacy state', view=None)
         edit.edit.assert_not_awaited()
         assert returned is interaction_message
 
@@ -792,9 +802,50 @@ async def test_interaction_edit_discord_failure_falls_back_to_active_message(
         edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
     )
 
-    response.edit_message.assert_awaited_once_with(content='Updated')
-    edit.edit.assert_awaited_once_with(content='Updated')
+    response.edit_message.assert_awaited_once_with(content='Updated', view=None)
+    edit.edit.assert_awaited_once_with(content='Updated', view=None)
     assert returned is edited_message
+
+
+@pytest.mark.asyncio
+async def test_active_message_edit_discord_failure_falls_back_to_interaction_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed active-message edit reaches the interaction's initial send path."""
+    sent_message = _editable()
+    response = SimpleNamespace(
+        is_done=lambda: False,
+        edit_message=AsyncMock(side_effect=DiscordException('edit failed')),
+        send_message=AsyncMock(),
+    )
+
+    class FakeInteraction:
+        def __init__(self) -> None:
+            self.response = response
+            self.message = object()
+            self.original_response = AsyncMock(return_value=sent_message)
+
+    interaction = FakeInteraction()
+    edit = SimpleNamespace(edit=AsyncMock(side_effect=DiscordException('edit failed')))
+    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+
+    returned = await send_helper(
+        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
+        LegacyMessage(content='Updated', edit_original=True),
+        None,
+        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
+    )
+
+    response.edit_message.assert_awaited_once_with(content='Updated', view=None)
+    edit.edit.assert_awaited_once_with(content='Updated', view=None)
+    response.send_message.assert_awaited_once_with(
+        ephemeral=False,
+        content='Updated',
+        tts=False,
+        suppress_embeds=False,
+        silent=False,
+    )
+    assert returned is sent_message
 
 
 @pytest.mark.asyncio
@@ -817,7 +868,7 @@ async def test_legacy_partial_message_is_edited_without_fetching() -> None:
     )
 
     edit.fetch.assert_not_awaited()
-    edit.edit.assert_awaited_once_with(content='Updated')
+    edit.edit.assert_awaited_once_with(content='Updated', view=None)
     messageable.send.assert_not_awaited()
     assert returned is edit.edit.return_value
 
