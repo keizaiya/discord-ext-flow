@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from asyncio import get_running_loop
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from logging import getLogger
 from typing import TYPE_CHECKING
 
 from discord import Interaction, ui
@@ -33,13 +35,18 @@ from .util import map_or, unwrap_or
 
 if TYPE_CHECKING:
     from asyncio import Future
+    from typing import Any
 
     from discord.ui.view import BaseView
+    from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
 
 
 __all__ = ('ModalCallback', 'ModalConfig', 'send_modal')
+
+
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -184,9 +191,20 @@ def _to_ui_modal_item(
 class _InnerModal(ui.Modal):
     fut: Future[Result]
 
-    def __init__(self, config: ModalConfig, items: Sequence[ModalItemType], callback: ModalCallback) -> None:
+    def __init__(
+        self,
+        config: ModalConfig,
+        items: Sequence[ModalItemType],
+        callback: ModalCallback,
+        *,
+        controller: Controller | None = None,
+        on_timeout: MaybeAwaitableFunc[[], Any] | None = None,
+    ) -> None:
         super().__init__(title=config.title, timeout=config.timeout, custom_id=unwrap_or(config.custom_id, MISSING))
         self.callback = callback
+        self.controller = controller
+        self._on_timeout = on_timeout
+        self._submit_started = False
         self.fut = get_running_loop().create_future()
         bindings: list[tuple[ModalInputItem, ui.Item[BaseView]]] = []
         for item in items:
@@ -202,23 +220,37 @@ class _InnerModal(ui.Modal):
         if self.fut.done():
             self.stop()
             return
+        self._submit_started = True
         try:
             for item in self._modal_items:
                 item._mark_submitted()
-            result = await maybe_coroutine(self.callback, interaction)
+            context = nullcontext() if self.controller is None else self.controller._set_to_context()
+            with context:
+                result = await maybe_coroutine(self.callback, interaction)
         except BaseException as exception:
             if not self.fut.done():
                 self.fut.set_exception(exception)
             raise
         else:
+            if result._interaction is None:
+                result = replace(result, _interaction=interaction)
             if not self.fut.done():
                 self.fut.set_result(result)
         finally:
             self.stop()
 
     async def on_timeout(self) -> None:
-        if not self.fut.done():
-            self.fut.cancel()
+        try:
+            if self._on_timeout is not None:
+                await maybe_coroutine(self._on_timeout)
+        except BaseException as exception:
+            if not self._submit_started and not self.fut.done():
+                self.fut.set_exception(exception)
+            else:
+                logger.exception('Modal timeout handler failed.')
+        else:
+            if not self._submit_started and not self.fut.done():
+                self.fut.cancel()
 
     async def _wait(self) -> Result:
         try:
@@ -227,21 +259,37 @@ class _InnerModal(ui.Modal):
             self.stop()
 
 
-async def send_modal(
+async def send_modal(  # noqa: PLR0913
     callback: ModalCallback,
     interaction: Interaction,
     config: ModalConfig,
     items: Sequence[ModalItemType],
     *,
     controller: Controller | None = None,
+    on_timeout: MaybeAwaitableFunc[[], Any] | None = None,
 ) -> ExternalResultTask:
     """Send a modal and register its submit result with the active flow.
 
     Read each submitted input through the ``value`` property of the ModalItem captured by the callback.
+
+    The timeout is handled by :class:`discord.ui.Modal`: when it expires before submission, the external result task
+    is cancelled after ``on_timeout`` returns. If submission has already started, its callback result is preserved.
+    A timeout handler failure before submission is delivered through the external result task; after submission starts,
+    the failure is logged while the submit result remains authoritative.
+
+    Args:
+        callback: Callback invoked with the interaction that submitted the modal.
+        interaction: Interaction used to send the modal.
+        config: :class:`discord.ui.Modal` configuration, including its timeout.
+        items: Modal fields and display items.
+        controller: Controller that owns this modal. If omitted, the active flow controller is used.
+        on_timeout: Optional callback invoked when the modal's configured timeout expires. Its return value is
+            discarded. If it raises before submission, the exception is propagated to the modal's external result. If
+            submission has started, the exception is logged and does not replace the submit result.
     """
     if controller is None:
         controller = _get_controller()
-    modal = _InnerModal(config=config, items=items, callback=callback)
+    modal = _InnerModal(config=config, items=items, callback=callback, controller=controller, on_timeout=on_timeout)
     await interaction.response.send_modal(modal)
     try:
         return controller.create_external_result(modal._wait, name='modal-wait', life_time=ExternalTaskLifeTime.MODEL)
