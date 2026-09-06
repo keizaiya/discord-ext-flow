@@ -397,6 +397,111 @@ async def test_failed_replacement_send_finalizes_previous_message_in_invoke_clea
 
 
 @pytest.mark.asyncio
+async def test_invoke_groups_flow_and_cleanup_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cleanup failure does not hide the exception that caused invocation to exit."""
+    sent = asyncio.Event()
+    flow_failure = RuntimeError('flow failed')
+    cleanup_failure = RuntimeError('cleanup failed')
+    initial_edit = _editable()
+    initial_edit_mock = cast('AsyncMock', initial_edit.edit)
+    initial_edit_mock.side_effect = cleanup_failure
+
+    class FailingModel(ModelBase):
+        def message(self) -> LegacyMessage:
+            return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
+
+        def after_invoke(self) -> None:
+            raise flow_failure
+
+    async def send(_: object, __: object, ___: _ViewType, ____: object) -> _Editable:
+        sent.set()
+        return initial_edit
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(FailingModel())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    view = controller._active_message
+    assert view is not None
+    assert view.view is not None
+    await view.view._set_result(Result.finish_flow(), _interaction())
+
+    with pytest.raises(ExceptionGroup) as raised:
+        await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert raised.value.exceptions == (flow_failure, cleanup_failure)
+    initial_edit_mock.assert_awaited_once_with(view=view.view)
+
+
+@pytest.mark.asyncio
+async def test_invoke_preserves_cleanup_failure_without_flow_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cleanup failure remains the only exception when invocation finishes normally."""
+    sent = asyncio.Event()
+    cleanup_failure = RuntimeError('cleanup failed')
+    initial_edit = _editable()
+    initial_edit_mock = cast('AsyncMock', initial_edit.edit)
+    initial_edit_mock.side_effect = cleanup_failure
+    captured_view: _ViewType | None = None
+
+    class Model(ModelBase):
+        def message(self) -> LegacyMessage:
+            return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
+
+    async def send(_: object, __: object, view: _ViewType, ____: object) -> _Editable:
+        nonlocal captured_view
+        captured_view = view
+        sent.set()
+        return initial_edit
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    invocation = asyncio.create_task(Controller(Model()).invoke(_messageable()))
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    assert captured_view is not None
+    view = captured_view
+    await view._set_result(Result.finish_flow(), _interaction())
+
+    with pytest.raises(RuntimeError, match='cleanup failed'):
+        await asyncio.wait_for(invocation, timeout=0.1)
+
+    initial_edit_mock.assert_awaited_once_with(view=view)
+
+
+@pytest.mark.asyncio
+async def test_invoke_groups_cancellation_and_cleanup_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cleanup failure does not hide cancellation of the invocation."""
+    sent = asyncio.Event()
+    cleanup_failure = RuntimeError('cleanup failed')
+    initial_edit = _editable()
+    initial_edit_mock = cast('AsyncMock', initial_edit.edit)
+    initial_edit_mock.side_effect = cleanup_failure
+    captured_view: _ViewType | None = None
+
+    class Model(ModelBase):
+        def message(self) -> LegacyMessage:
+            return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
+
+    async def send(_: object, __: object, view: _ViewType, ____: object) -> _Editable:
+        nonlocal captured_view
+        captured_view = view
+        sent.set()
+        return initial_edit
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    invocation = asyncio.create_task(Controller(Model()).invoke(_messageable()))
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    invocation.cancel()
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert captured_view is not None
+    assert isinstance(raised.value, BaseExceptionGroup)
+    assert isinstance(raised.value.exceptions[0], asyncio.CancelledError)
+    assert raised.value.exceptions[1] is cleanup_failure
+    initial_edit_mock.assert_awaited_once_with(view=captured_view)
+
+
+@pytest.mark.asyncio
 async def test_reused_controller_clears_stale_external_task_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """A terminal invocation cannot leave a completed task-added waiter for the next invocation."""
     send = AsyncMock(return_value=_sent())

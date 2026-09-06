@@ -258,6 +258,11 @@ class Controller:
         Args:
             messageable (Sendable): Messageable or interaction to send first message.
             message (discord.Message | None): The first target for editing if edit_original is True. Defaults to None.
+
+        Note:
+            If ``messageable`` is an unacknowledged interaction without a triggering message and ``message`` is
+            provided for a direct edit, the caller must acknowledge the interaction before invoking. Editing the
+            explicit message target does not acknowledge the interaction response.
         """
         async with AsyncExitStack() as st:
             st.enter_context(self._set_to_context())
@@ -281,7 +286,15 @@ class Controller:
     ) -> None:
         await force_cancel_tasks(task.task for task in self.external_tasks)
         self.external_tasks.clear()
-        await self._finalize_active_message()
+        try:
+            await self._finalize_active_message()
+        except BaseException as cleanup_exception:
+            if _exception is None:
+                raise
+            raise BaseExceptionGroup(
+                'Errors occurred during flow cleanup',
+                (_exception, cleanup_exception),
+            ) from None
 
     def create_external_result(
         self,
