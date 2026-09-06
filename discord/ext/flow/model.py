@@ -15,7 +15,7 @@ __all__ = (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from typing import Any, TypedDict
+    from typing import Any, Literal, TypedDict
 
     from discord import AllowedMentions, Embed, File as SendableFile, Poll
     from discord.ui import LayoutView, View
@@ -176,17 +176,17 @@ def create_message(
 @overload
 def create_message(
     *,
-    content: str | None = None,
+    content: None = None,
     items: Sequence[V2ItemType],
-    tts: bool = False,
-    embeds: Sequence[Embed] | None = None,
+    tts: Literal[False] = False,
+    embeds: None = None,
     files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
-    suppress_embeds: bool = False,
+    suppress_embeds: Literal[False] = False,
     ephemeral: bool = False,
     silent: bool = False,
-    poll: Poll | None = None,
+    poll: None = None,
     edit_original: bool = False,
     disable_items: bool = False,
 ) -> ComponentV2Message: ...
@@ -195,17 +195,17 @@ def create_message(
 @overload
 def create_message(
     *,
-    content: str | None = None,
+    content: None = None,
     items: Sequence[CreateItemType],
-    tts: bool = False,
-    embeds: Sequence[Embed] | None = None,
+    tts: Literal[False] = False,
+    embeds: None = None,
     files: Sequence[SendableFile] | None = None,
     delete_after: float | None = None,
     allowed_mentions: AllowedMentions | None = None,
-    suppress_embeds: bool = False,
+    suppress_embeds: Literal[False] = False,
     ephemeral: bool = False,
     silent: bool = False,
-    poll: Poll | None = None,
+    poll: None = None,
     edit_original: bool = False,
     disable_items: bool = False,
 ) -> ComponentV2Message | LegacyMessage: ...
@@ -227,7 +227,13 @@ def create_message(  # noqa: PLR0913
     edit_original: bool = False,
     disable_items: bool = False,
 ) -> ComponentV2Message | LegacyMessage:
-    """Create a V2 or legacy message according to the supplied component items."""
+    """Create a V2 or legacy message according to the supplied component items.
+
+    Component V2 messages cannot use non-default values for ``content``, ``tts``,
+    ``embeds``, ``poll``, or ``suppress_embeds``. With a broad ``CreateItemType``
+    annotation, only fields valid for both message kinds are accepted; narrow
+    ``items`` to ``LegacyItemType`` before using legacy-only fields.
+    """
     if items is not None and is_sequence_v2_item(items):
         if not is_sequence_all_v2_item(items):
             raise ValueError('Component V2 top-level items cannot be mixed with legacy top-level items.')

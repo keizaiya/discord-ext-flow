@@ -659,15 +659,15 @@ def test_create_message_rejects_v2_incompatible_fields() -> None:
     text = TextDisplay('Component V2 content')
 
     with pytest.raises(ValueError, match='content'):
-        create_message(items=(text,), content='invalid')
+        create_message(items=(text,), content='invalid')  # type: ignore[arg-type, call-overload, reportCallIssue]
     with pytest.raises(ValueError, match='embeds'):
-        create_message(items=(text,), embeds=())
+        create_message(items=(text,), embeds=())  # type: ignore[arg-type, call-overload, reportCallIssue]
     with pytest.raises(ValueError, match='poll'):
-        create_message(items=(text,), poll=Poll('Question?', timedelta(hours=1)))
+        create_message(items=(text,), poll=Poll('Question?', timedelta(hours=1)))  # type: ignore[arg-type, call-overload, reportCallIssue]
     with pytest.raises(ValueError, match='tts'):
-        create_message(items=(text,), tts=True)
+        create_message(items=(text,), tts=True)  # type: ignore[arg-type, call-overload, reportCallIssue]
     with pytest.raises(ValueError, match='suppress_embeds'):
-        create_message(items=(text,), suppress_embeds=True)
+        create_message(items=(text,), suppress_embeds=True)  # type: ignore[arg-type, call-overload, reportCallIssue]
     with pytest.raises(ValueError, match='cannot be mixed'):
         create_message(items=(text, Button().on(callback=_callback)))
 
