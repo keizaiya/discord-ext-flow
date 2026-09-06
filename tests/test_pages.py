@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeGuard
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from discord import Interaction, ui
@@ -28,6 +28,7 @@ from discord.ext.flow import (
 from discord.ext.flow.controller import Controller
 from discord.ext.flow.modal import _InnerModal
 from discord.ext.flow.pages import NEXT_EMOJI
+from discord.ext.flow.result import _ResultTypeEnum
 from discord.ext.flow.view import create_view
 from discord.utils import maybe_coroutine
 
@@ -235,6 +236,66 @@ async def test_component_v2_paginator_page_modal_edits_selected_page(
     assert isinstance(selected._message, ComponentV2Message)
     assert selected._message.edit_original
     assert selected._interaction is interaction
+
+
+@pytest.mark.parametrize('value', ['not a page', '0', '4'])
+@pytest.mark.asyncio
+async def test_component_v2_paginator_page_modal_acknowledges_invalid_page(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    """Invalid page submissions are acknowledged without rebuilding or changing the paginator."""
+    captured: tuple[ModalCallback, ModalConfig, Sequence[ModalItemType]] | None = None
+    task = _ModalTask()
+
+    async def fake_send_modal(
+        modal_callback: ModalCallback,
+        _: Interaction,
+        config: ModalConfig,
+        items: Sequence[ModalItemType],
+        **__: object,
+    ) -> _ModalTask:
+        nonlocal captured
+        captured = (modal_callback, config, items)
+        return task
+
+    monkeypatch.setattr('discord.ext.flow.pages.send_modal', fake_send_modal)
+
+    calls: list[tuple[tuple[int, ...], int, int]] = []
+
+    def builder(
+        values: tuple[int, ...], current: int, max_page: int, controls: PaginatorControls
+    ) -> ComponentV2Message:
+        calls.append((values, current, max_page))
+        return ComponentV2Message(items=(TextDisplay(str(values)), ActionRow(items=controls)))
+
+    pagination = ComponentV2Paginator(builder, values=range(30))
+    message = await pagination._message()
+    row = message.items[1]
+    assert isinstance(row, ActionRow)
+    page = row.items[2]
+    assert _is_interactive_button(page)
+
+    await maybe_coroutine(page.callback, _interaction())
+    assert captured is not None
+    callback, config, items = captured
+    submitted = _InnerModal(config, items, callback)
+    label = submitted.children[0]
+    assert isinstance(label, ui.Label)
+    assert isinstance(label.component, ui.TextInput)
+    submit_interaction = MagicMock(spec=Interaction, **{'response.defer': AsyncMock()})
+
+    await submitted._scheduled_task(
+        submit_interaction,
+        [{'type': 18, 'component': {'type': 4, 'custom_id': label.component.custom_id, 'value': value}}],
+        {},
+    )
+    result = await submitted._wait()
+
+    assert result._type is _ResultTypeEnum.CONTINUE
+    submit_interaction.response.defer.assert_awaited_once_with()
+    assert calls == [((0, 1, 2, 3, 4, 5, 6, 7, 8, 9), 0, 3)]
+    assert pagination.current_page == 0
 
 
 @pytest.mark.asyncio

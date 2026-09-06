@@ -129,12 +129,23 @@ class _BasePaginator[T, M: (ComponentV2Message, LegacyMessage)]:
         return Result.send_message(message=await self._message(edit_original=True))
 
     async def _go_to_page(self, interaction: Interaction) -> Result:
+        """Open a modal for selecting a page and acknowledge invalid submissions."""
         page_number = TextInput(placeholder=f'1 ~ {self.max_page}').field()
 
         async def callback(interaction: Interaction) -> Result:
             text = page_number.value
-            assert text.isdigit()
-            self._set_page_number(int(text) - 1)
+            if not text.isdigit():
+                await interaction.response.defer()
+                return Result.continue_flow()
+            try:
+                page = int(text) - 1
+            except ValueError:
+                await interaction.response.defer()
+                return Result.continue_flow()
+            if not 0 <= page < self.max_page:
+                await interaction.response.defer()
+                return Result.continue_flow()
+            self._set_page_number(page)
             return Result.send_message(message=await self._message(edit_original=True), interaction=interaction)
 
         task = await send_modal(
@@ -166,6 +177,7 @@ class Paginator[T](_BasePaginator[T, LegacyMessage]):
     """Paginator for legacy messages.
 
     You should use `paginator` decorator and return this class instance.
+    The page control accepts an in-range page number; other submissions are acknowledged without changing the page.
 
     Args:
         message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int], LegacyMessage]):
@@ -219,6 +231,7 @@ class ComponentV2Paginator[T](_BasePaginator[T, ComponentV2Message]):
     You should use `paginator` decorator and return this class instance. The message builder receives named navigation
     controls as its fourth argument. Place them in one or more `ActionRow` objects or use individual buttons as
     `Section` accessories.
+    The page control accepts an in-range page number; other submissions are acknowledged without changing the page.
 
     Args:
         message_builder (MaybeAwaitableFunc[[tuple[T, ...], int, int, PaginatorControls], ComponentV2Message]):

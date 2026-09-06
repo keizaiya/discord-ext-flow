@@ -46,7 +46,7 @@ class Pagination(ModelBase):
             items=(
                 Container(
                     items=(
-                        TextDisplay(f'# {current}/{max_page}\n' + '\n'.join(str(state) for state in msgs)),
+                        TextDisplay(f'# {current + 1}/{max_page}\n' + '\n'.join(str(state) for state in msgs)),
                         *item_rows,
                         ActionRow(items=controls),
                     ),
