@@ -55,7 +55,8 @@ class Message(NamedTuple):
     """A legacy message to send to Discord. See discord.Messageable.send for more info.
 
     Note:
-        - `items` is a Sequence of `Button`, `Select`, or etc. if None or not set, send message and stop flow.
+        - `items` is a Sequence of `Button`, `Select`, or etc. If omitted, None, or empty,
+          the message is sent without a view and the flow stops.
         - `view` will set by this lib. you can not set it.
         - `embed`, `file`, or `sticker` is not support. use `embeds`, `files`, or `stickers` instead.
         - `reference` is not support in Interaction.
@@ -108,6 +109,7 @@ class ComponentV2Message(NamedTuple):
 
     Note:
         - `items` is a required Sequence of Component V2 items.
+          If empty, the message is sent without a view and the flow stops.
         - `view` will set by this lib. you can not set it.
         - `content`, `tts`, `embeds`, `poll`, and `suppress_embeds` are not supported.
         - `reference` is not support in Interaction.

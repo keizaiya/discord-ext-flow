@@ -296,7 +296,7 @@ class Controller:
         msg = await maybe_coroutine(model.message)
         if not isinstance(msg, (ComponentV2Message, Message)):
             raise TypeError('ModelBase.message must return ComponentV2Message or LegacyMessage.')
-        if msg.items is None:
+        if not msg.items:
             await self._send_and_activate_message(messageable, msg, None, edit)
             await maybe_coroutine(model.after_invoke)
             return None
@@ -393,35 +393,40 @@ class Controller:
         view: _ViewType,
         result: Result,
     ) -> _ResultOutcome:
-        if result._interaction is None:
-            raise ValueError('result._interaction is None.')
-        messageable = result._interaction
+        interaction = result._interaction
+        if interaction is None:
+            if self._active_message is None:
+                raise ValueError('result._interaction is None.')
+            messageable = self._active_message.messageable
+        else:
+            messageable = interaction
 
         match result._type:
             case _ResultTypeEnum.MESSAGE:
                 assert result._message is not None
-                assert messageable is not None
-                replacement = create_view(
-                    config=view.config,
-                    items=result._message.items or (),
-                    controller=self,
-                )
+                replacement = None
+                if result._message.items:
+                    replacement = create_view(
+                        config=view.config,
+                        items=result._message.items,
+                        controller=self,
+                    )
                 await self._send_and_activate_message(
                     messageable,
                     result._message,
                     replacement,
                     None if self._active_message is None else self._active_message.editable,
                 )
-                return _ResultOutcome(_ResultAction.REPLACE_VIEW)
+                action = _ResultAction.REPLACE_VIEW if replacement is not None else _ResultAction.FINISH_FLOW
+                return _ResultOutcome(action)
 
             case _ResultTypeEnum.MODEL:
                 assert result._model is not None
-                assert messageable is not None
                 view.stop()
                 return _ResultOutcome(_ResultAction.TRANSITION_MODEL, (result._model, messageable))
 
             case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
-                if not messageable.response.is_done():
+                if interaction is not None and not interaction.response.is_done():
                     raise RuntimeError('Callback MUST consume interaction.')
                 if result._is_end:
                     view.stop()

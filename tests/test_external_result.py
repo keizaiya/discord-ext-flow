@@ -17,6 +17,7 @@ from discord.ext.flow import (
     ComponentV2Message,
     FlowTimeoutError,
     LegacyMessage,
+    Link,
     ModalConfig,
     ModelBase,
     Result,
@@ -589,11 +590,214 @@ async def test_unprocessed_persistent_results_continue_into_next_models(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_external_message_without_interaction_finishes_without_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external message without items uses the active messageable and ends the flow."""
+    initial_sent = asyncio.Event()
+    never_finishes = asyncio.Event()
+    replacement = LegacyMessage(content='Finished')
+    source = _messageable()
+
+    class Model(_InteractiveModel):
+        def __init__(self, controller: Controller) -> None:
+            self.controller = controller
+            self.pending_task: ExternalResultTask | None = None
+
+        def before_invoke(self) -> None:
+            async def replace_message() -> Result:
+                return Result.send_message(replacement)
+
+            async def wait_forever() -> Result:
+                await never_finishes.wait()
+                return Result.finish_flow()
+
+            self.controller.create_external_result(replace_message)
+            self.pending_task = self.controller.create_external_result(wait_forever)
+
+    async def send(messageable: object, message: LegacyMessage, view: _ViewType | None, _: object) -> _Editable:
+        assert messageable is source
+        if message is replacement:
+            assert view is None
+        initial_sent.set()
+        return _sent()
+
+    send_mock = AsyncMock(side_effect=send)
+    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    model = Model(Controller(_StaticModel()))
+    controller = model.controller
+    controller.model = model
+
+    await asyncio.wait_for(controller.invoke(source), timeout=0.1)
+
+    await asyncio.wait_for(initial_sent.wait(), timeout=0.1)
+    assert model.pending_task is not None
+    assert model.pending_task.task.cancelled()
+    assert send_mock.await_count == 2
+
+
+@pytest.mark.parametrize('model_message', [LegacyMessage(items=()), ComponentV2Message(items=())])
+@pytest.mark.asyncio
+async def test_empty_model_message_finishes_and_cancels_pending_external_result(
+    monkeypatch: pytest.MonkeyPatch,
+    model_message: ComponentV2Message | LegacyMessage,
+) -> None:
+    """Empty model messages of either kind do not create a view or retain external tasks."""
+    source = _messageable()
+    never_finishes = asyncio.Event()
+
+    class Model(ModelBase):
+        def __init__(self) -> None:
+            self.controller: Controller | None = None
+            self.pending_task: ExternalResultTask | None = None
+
+        def before_invoke(self) -> None:
+            assert self.controller is not None
+
+            async def wait_forever() -> Result:
+                await never_finishes.wait()
+                return Result.finish_flow()
+
+            self.pending_task = self.controller.create_external_result(wait_forever)
+
+        def message(self) -> ComponentV2Message | LegacyMessage:
+            return model_message
+
+    model = Model()
+    controller = Controller(model)
+    model.controller = controller
+
+    async def send(
+        messageable: object,
+        sent_message: ComponentV2Message | LegacyMessage,
+        view: _ViewType | None,
+        _: object,
+    ) -> _Editable:
+        assert messageable is source
+        assert sent_message is model_message
+        assert view is None
+        return _sent()
+
+    send_mock = AsyncMock(side_effect=send)
+    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+
+    await asyncio.wait_for(controller.invoke(source), timeout=0.1)
+
+    assert model.pending_task is not None
+    assert model.pending_task.task.cancelled()
+    send_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_next_model_without_interaction_uses_active_messageable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external model transition can use the active messageable implicitly."""
+    source = _messageable()
+    next_model = _StaticModel()
+
+    class Model(_InteractiveModel):
+        def __init__(self, controller: Controller) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def transition() -> Result:
+                return Result.next_model(next_model)
+
+            self.controller.create_external_result(transition)
+
+    send_mock = AsyncMock(return_value=_sent())
+    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    model = Model(Controller(_StaticModel()))
+    model.controller.model = model
+
+    await asyncio.wait_for(model.controller.invoke(source), timeout=0.1)
+
+    assert send_mock.await_count == 2
+    assert all(call.args[0] is source for call in send_mock.await_args_list)
+    assert next_model.after_invoked
+
+
+@pytest.mark.asyncio
+async def test_external_continue_without_interaction_keeps_view_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external continue result does not require an interaction response."""
+    source = _messageable()
+    initial_sent = asyncio.Event()
+    external_completed = asyncio.Event()
+    captured_view: _ViewType | None = None
+
+    class Model(_InteractiveModel):
+        def __init__(self, controller: Controller) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def continue_flow() -> Result:
+                try:
+                    return Result.continue_flow()
+                finally:
+                    external_completed.set()
+
+            self.controller.create_external_result(continue_flow)
+
+    async def send(_: object, __: LegacyMessage, view: _ViewType, ___: object) -> _Editable:
+        nonlocal captured_view
+        captured_view = view
+        initial_sent.set()
+        return _sent()
+
+    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    model = Model(Controller(_StaticModel()))
+    model.controller.model = model
+    invocation = asyncio.create_task(model.controller.invoke(source))
+
+    await asyncio.wait_for(initial_sent.wait(), timeout=0.1)
+    await asyncio.wait_for(external_completed.wait(), timeout=0.1)
+    await asyncio.sleep(0)
+
+    assert captured_view is not None
+    assert not invocation.done()
+    await _first_button(captured_view).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_external_finish_without_interaction_ends_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An external finish result can end a flow without an interaction."""
+    source = _messageable()
+    initial_sent = asyncio.Event()
+
+    class Model(_InteractiveModel):
+        def __init__(self, controller: Controller) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def finish() -> Result:
+                return Result.finish_flow()
+
+            self.controller.create_external_result(finish)
+
+    async def send(messageable: object, _: LegacyMessage, __: _ViewType, ___: object) -> _Editable:
+        assert messageable is source
+        initial_sent.set()
+        return _sent()
+
+    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    model = Model(Controller(_StaticModel()))
+    model.controller.model = model
+
+    await asyncio.wait_for(model.controller.invoke(source), timeout=0.1)
+
+    assert initial_sent.is_set()
+
+
+@pytest.mark.asyncio
 async def test_view_model_result_precedes_simultaneous_external_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A direct component transition wins before a completed external replacement."""
     interaction = _interaction()
-    next_message = LegacyMessage(content='Next model', items=())
-    external_message = LegacyMessage(content='External replacement', items=())
+    next_message = LegacyMessage(content='Next model', items=(Link(url='https://example.com/next'),))
+    external_message = LegacyMessage(content='External replacement', items=(Link(url='https://example.com/external'),))
     ui_ready = asyncio.Event()
     ui_release = asyncio.Event()
     ui_completed = asyncio.Event()
@@ -917,11 +1121,13 @@ async def test_cancelled_external_result_does_not_preempt_view_result(monkeypatc
     assert model.task.task.cancelled()
 
 
+@pytest.mark.parametrize('replacement', [LegacyMessage(content='Finished', items=()), ComponentV2Message(items=())])
 @pytest.mark.asyncio
-async def test_cancelled_final_external_result_releases_static_replacement(
+async def test_empty_external_result_finishes_and_cancels_pending_task(
     monkeypatch: pytest.MonkeyPatch,
+    replacement: ComponentV2Message | LegacyMessage,
 ) -> None:
-    """A stale view waiter cannot keep a static replacement alive after cancellation."""
+    """An explicit empty replacement has no view and cancels pending external results."""
     replacement_sent = asyncio.Event()
     never_finishes = asyncio.Event()
     interaction = _interaction()
@@ -934,7 +1140,7 @@ async def test_cancelled_final_external_result_releases_static_replacement(
 
         def before_invoke(self) -> None:
             async def replace_message() -> Result:
-                return Result.send_message(LegacyMessage(content='Finished', items=()), interaction=interaction)
+                return Result.send_message(replacement, interaction=interaction)
 
             async def wait_forever() -> Result:
                 await never_finishes.wait()
@@ -943,8 +1149,15 @@ async def test_cancelled_final_external_result_releases_static_replacement(
             self.controller.create_external_result(replace_message)
             self.pending_task = self.controller.create_external_result(wait_forever)
 
-    async def send(*_: object) -> _Editable:
+    async def send(
+        _: object,
+        sent_message: ComponentV2Message | LegacyMessage,
+        view: _ViewType | None,
+        ___: object,
+    ) -> _Editable:
         if send_mock.await_count == 2:
+            assert sent_message is replacement
+            assert view is None
             replacement_sent.set()
         return _sent()
 
@@ -957,9 +1170,6 @@ async def test_cancelled_final_external_result_releases_static_replacement(
 
     invoke = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
-    assert not invoke.done()
-
-    model.pending_task.cancel()
     await asyncio.wait_for(invoke, timeout=0.1)
 
     assert model.pending_task.task.cancelled()
