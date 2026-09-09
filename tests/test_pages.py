@@ -450,7 +450,7 @@ async def test_component_v2_paginator_respects_message_wide_component_limit() ->
     message = await ComponentV2Paginator(builder, values=(1,))._message()
 
     with pytest.raises(ValueError, match=r'maximum number of children exceeded \(40\)'):
-        create_view({}, message.items, Controller(_Model()), _Model())
+        create_view({}, message.items, Controller(_Model()))
 
 
 @pytest.mark.asyncio

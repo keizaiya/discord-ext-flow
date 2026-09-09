@@ -363,7 +363,7 @@ async def test_retiring_view_reclaims_timeout_once(monkeypatch: pytest.MonkeyPat
     model = Model()
     controller = Controller(model)
     message = model.message()
-    view = create_view({}, message.items or (), controller, model)
+    view = create_view({}, message.items or (), controller)
     await controller._send_and_activate_message(_messageable(), message, view, None)
     view._dispatch_timeout()  # type: ignore[no-untyped-call]
     await controller._retire_view(view)

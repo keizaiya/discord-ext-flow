@@ -50,7 +50,7 @@ if TYPE_CHECKING:
         UserSelectCallback,
         V2ItemType,
     )
-    from .model import ModelBase, ViewConfig
+    from .model import ViewConfig
 
     if sys.version_info < (3, 13):
         from typing_extensions import TypeIs
@@ -78,7 +78,7 @@ class _Button(ui.Button[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction)
 
 
 class _Link(ui.Button[V]):
@@ -118,7 +118,7 @@ class _Select(ui.Select[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction, self.values)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
 class _UserSelect(ui.UserSelect[V]):
@@ -141,7 +141,7 @@ class _UserSelect(ui.UserSelect[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction, self.values)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
 class _RoleSelect(ui.RoleSelect[V]):
@@ -164,7 +164,7 @@ class _RoleSelect(ui.RoleSelect[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction, self.values)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
 class _MentionableSelect(ui.MentionableSelect[V]):
@@ -187,7 +187,7 @@ class _MentionableSelect(ui.MentionableSelect[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction, self.values)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
 class _ChannelSelect(ui.ChannelSelect[V]):
@@ -211,7 +211,7 @@ class _ChannelSelect(ui.ChannelSelect[V]):
         self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        self.view.controller._dispatch_ui_callback(self.view, self.flow_callback, interaction, self.values)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
 _RAW_INTERACTIVE_TYPES = (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)
@@ -308,21 +308,17 @@ def _to_v2_item(item: V2ItemType) -> ui.Item[_LayoutView]:  # noqa: PLR0911
 class _ViewLifecycleMixin:
     config: ViewConfig
     controller: Controller
-    model: ModelBase
 
-    def _init_flow_state(self, config: ViewConfig, controller: Controller, model: ModelBase) -> None:
+    def _init_flow_state(self, config: ViewConfig, controller: Controller) -> None:
         self.config = config
         self.controller = controller
-        self.model = model
 
 
 class _View(_ViewLifecycleMixin, ui.View):
-    def __init__(
-        self, config: ViewConfig, items: Sequence[LegacyItemType], controller: Controller, model: ModelBase
-    ) -> None:
+    def __init__(self, config: ViewConfig, items: Sequence[LegacyItemType], controller: Controller) -> None:
         super().__init__(timeout=config.get('timeout'))
         self.set_items(items)
-        self._init_flow_state(config, controller, model)
+        self._init_flow_state(config, controller)
 
     def set_items(self, items: Sequence[LegacyItemType]) -> None:
         for item in items:
@@ -330,12 +326,10 @@ class _View(_ViewLifecycleMixin, ui.View):
 
 
 class _LayoutView(_ViewLifecycleMixin, ui.LayoutView):
-    def __init__(
-        self, config: ViewConfig, items: Sequence[V2ItemType], controller: Controller, model: ModelBase
-    ) -> None:
+    def __init__(self, config: ViewConfig, items: Sequence[V2ItemType], controller: Controller) -> None:
         super().__init__(timeout=config.get('timeout'))
         self.set_items(items)
-        self._init_flow_state(config, controller, model)
+        self._init_flow_state(config, controller)
 
     def set_items(self, items: Sequence[V2ItemType]) -> None:
         for item in items:
@@ -349,9 +343,8 @@ def create_view(
     config: ViewConfig,
     items: Sequence[V2ItemType] | Sequence[LegacyItemType],
     controller: Controller,
-    model: ModelBase,
 ) -> _ViewType:
     """Create the narrowest discord.py view capable of holding the configured items."""
     if is_sequence_v2_item(items):
-        return _LayoutView(config=config, items=items, controller=controller, model=model)
-    return _View(config=config, items=items, controller=controller, model=model)
+        return _LayoutView(config=config, items=items, controller=controller)
+    return _View(config=config, items=items, controller=controller)

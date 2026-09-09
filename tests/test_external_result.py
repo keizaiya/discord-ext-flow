@@ -318,7 +318,7 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
         disable_items=True,
     )
     view_config: ViewConfig = {'timeout': 42.0}
-    initial_view = create_view(view_config, initial_config.items or (), controller, controller.model)
+    initial_view = create_view(view_config, initial_config.items or (), controller)
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=initial_message))
     await controller._send_and_activate_message(_messageable(), initial_config, initial_view, None)
 
