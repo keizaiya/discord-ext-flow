@@ -13,7 +13,9 @@ errors from that model's UI callbacks and view timeout; the controller handler
 receives the remaining UI errors, external task errors, and timeouts.
 
 Handlers receive an `ExceptionGroup` and return `None`. The group contains the
-original exceptions, or `FlowTimeoutError` for a view timeout. No UI item or
-interaction is supplied, and a timeout handler does not restart the expired
-view. A handler is intended for reporting and final fallback cleanup; it does
+original exceptions, or `FlowTimeoutError` for a view or modal timeout. No UI item or
+interaction is supplied, and a timeout does not restart the expired view. A
+handler is intended for reporting and final fallback cleanup; it does
 not replace handling expected errors inside the callback or external operation.
+Exceptions recovered during flow cleanup propagate to the caller of
+`Controller.invoke`.

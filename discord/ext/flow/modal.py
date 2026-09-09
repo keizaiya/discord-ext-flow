@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from discord import Interaction, ui
 from discord.utils import MISSING, maybe_coroutine
 
-from .controller import Controller, _get_controller
+from .controller import Controller, FlowTimeoutError, _get_controller
 from .external_task import ExternalTaskLifeTime
 from .item import (
     ChannelSelect,
@@ -35,10 +35,8 @@ from .util import map_or, unwrap_or
 
 if TYPE_CHECKING:
     from asyncio import Future
-    from typing import Any
 
     from discord.ui.view import BaseView
-    from discord.utils import MaybeAwaitableFunc
 
     from .external_task import ExternalResultTask
 
@@ -198,12 +196,10 @@ class _InnerModal(ui.Modal):
         callback: ModalCallback,
         *,
         controller: Controller | None = None,
-        on_timeout: MaybeAwaitableFunc[[], Any] | None = None,
     ) -> None:
         super().__init__(title=config.title, timeout=config.timeout, custom_id=unwrap_or(config.custom_id, MISSING))
         self.callback = callback
         self.controller = controller
-        self._on_timeout = on_timeout
         self._submit_started = False
         self.fut = get_running_loop().create_future()
         bindings: list[tuple[ModalInputItem, ui.Item[BaseView]]] = []
@@ -228,7 +224,7 @@ class _InnerModal(ui.Modal):
             with context:
                 result = await maybe_coroutine(self.callback, interaction)
         except BaseException as exception:
-            if not self.fut.done():
+            if not isinstance(exception, Exception) and not self.fut.done():
                 self.fut.set_exception(exception)
             raise
         else:
@@ -240,17 +236,16 @@ class _InnerModal(ui.Modal):
             self.stop()
 
     async def on_timeout(self) -> None:
-        try:
-            if self._on_timeout is not None:
-                await maybe_coroutine(self._on_timeout)
-        except BaseException as exception:
-            if not self._submit_started and not self.fut.done():
-                self.fut.set_exception(exception)
-            else:
-                logger.exception('Modal timeout handler failed.')
+        if not self._submit_started and not self.fut.done():
+            self.fut.set_exception(FlowTimeoutError('The flow modal timed out.'))
+
+    async def on_error(self, _interaction: Interaction, error: Exception, /) -> None:  # type: ignore[override]
+        if not self.fut.done():
+            self.fut.set_exception(error)
         else:
-            if not self._submit_started and not self.fut.done():
-                self.fut.cancel()
+            logger.error(
+                'Ignoring exception in flow modal %r after its result became unavailable.', self, exc_info=error
+            )
 
     async def _wait(self) -> Result:
         try:
@@ -259,23 +254,21 @@ class _InnerModal(ui.Modal):
             self.stop()
 
 
-async def send_modal(  # noqa: PLR0913
+async def send_modal(
     callback: ModalCallback,
     interaction: Interaction,
     config: ModalConfig,
     items: Sequence[ModalItemType],
     *,
     controller: Controller | None = None,
-    on_timeout: MaybeAwaitableFunc[[], Any] | None = None,
 ) -> ExternalResultTask:
     """Send a modal and register its submit result with the active flow.
 
     Read each submitted input through the ``value`` property of the ModalItem captured by the callback.
 
-    The timeout is handled by :class:`discord.ui.Modal`: when it expires before submission, the external result task
-    is cancelled after ``on_timeout`` returns. If submission has already started, its callback result is preserved.
-    A timeout handler failure before submission is delivered through the external result task; after submission starts,
-    the failure is logged while the submit result remains authoritative.
+    When the timeout expires before submission, the external result task fails with :class:`FlowTimeoutError`. If
+    submission has already started, its callback result is preserved. A submit callback failure is delivered through
+    the external result task without also being logged by :mod:`discord.py`.
 
     Args:
         callback: Callback invoked with the interaction that submitted the modal.
@@ -283,13 +276,10 @@ async def send_modal(  # noqa: PLR0913
         config: :class:`discord.ui.Modal` configuration, including its timeout.
         items: Modal fields and display items.
         controller: Controller that owns this modal. If omitted, the active flow controller is used.
-        on_timeout: Optional callback invoked when the modal's configured timeout expires. Its return value is
-            discarded. If it raises before submission, the exception is propagated to the modal's external result. If
-            submission has started, the exception is logged and does not replace the submit result.
     """
     if controller is None:
         controller = _get_controller()
-    modal = _InnerModal(config=config, items=items, callback=callback, controller=controller, on_timeout=on_timeout)
+    modal = _InnerModal(config=config, items=items, callback=callback, controller=controller)
     await interaction.response.send_modal(modal)
     try:
         return controller.create_external_result(modal._wait, name='modal-wait', life_time=ExternalTaskLifeTime.MODEL)

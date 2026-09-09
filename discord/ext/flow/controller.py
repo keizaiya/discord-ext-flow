@@ -50,7 +50,7 @@ type ErrorCallback = Callable[[ExceptionGroup[Exception]], MaybeAwaitable[None]]
 
 
 class FlowTimeoutError(TimeoutError):
-    """Raised internally when a flow view reaches its configured timeout."""
+    """Raised internally when a flow view or modal reaches its configured timeout."""
 
 
 def _get_controller() -> Controller:
@@ -130,6 +130,10 @@ def create_external_result(
 
     Returns:
         ExternalResult: task of External result.
+
+    Note:
+        Registering an external result while flow cleanup is in progress is not guaranteed. The task may be
+        cancelled without its result being applied.
     """
     return _get_controller().create_external_result(coro, name=name, life_time=life_time)
 
@@ -160,7 +164,6 @@ class Controller:
         self._external_task_event = Event()
         self._tasks = {}
         self._current_model: ModelBase = initial_model
-        self._closing = False
         self._error_callback = on_error
 
     def copy(self) -> Self:
@@ -194,7 +197,6 @@ class Controller:
             provided for a direct edit, the caller must acknowledge the interaction before invoking. Editing the
             explicit message target does not acknowledge the interaction response.
         """
-        self._closing = False
         self._external_task_event.clear()
         self._current_model = self.model
         async with AsyncExitStack() as stack:
@@ -217,7 +219,6 @@ class Controller:
         exception: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        self._closing = True
         cleanup_failures: list[BaseException] = []
         try:
             await self._finalize_active_message()
@@ -248,9 +249,11 @@ class Controller:
 
         Returns:
             ExternalResultTask: task of External result.
+
+        Note:
+            Registering an external result while flow cleanup is in progress is not guaranteed. The task may be
+            cancelled without its result being applied.
         """
-        if self._closing:
-            raise RuntimeError('Cannot create an external result while flow cleanup is in progress.')
         task = ExternalResultTask(coro, name=name, lifetime=life_time)
         self._tasks[task.task] = _ResultTaskRecord(task.task, self._current_model, task, None)
         self._external_task_event.set()
@@ -267,7 +270,7 @@ class Controller:
         *values: _CallbackParams.args,
         **kwargs: _CallbackParams.kwargs,
     ) -> Task[Result] | None:
-        if self._closing or view.is_finished():
+        if view.is_finished():
             return None
 
         async def invoke_callback() -> Result:

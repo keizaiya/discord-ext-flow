@@ -15,6 +15,7 @@ from discord.ext.flow import (
     Button,
     ChannelSelect,
     Container,
+    FlowTimeoutError,
     MentionableSelect,
     ModelBase,
     Result,
@@ -32,7 +33,6 @@ from discord.ext.flow.modal import _InnerModal
 if TYPE_CHECKING:
     from discord import Attachment, Member, Role, User
     from discord.app_commands import AppCommandChannel, AppCommandThread
-    from discord.utils import MaybeAwaitableFunc
 
 
 def _finish(_: Interaction[Client]) -> Result:
@@ -48,9 +48,8 @@ def _inner_modal(
     callback: modal.ModalCallback = _finish,
     title: str = 'Survey',
     controller: Controller | None = None,
-    on_timeout: MaybeAwaitableFunc[[], Any] | None = None,
 ) -> _InnerModal:
-    return _InnerModal(_modal_config(title=title), items, callback, controller=controller, on_timeout=on_timeout)
+    return _InnerModal(_modal_config(title=title), items, callback, controller=controller)
 
 
 def _component_payload(component_type: int, custom_id: str, **values: object) -> list[dict[str, object]]:
@@ -548,8 +547,7 @@ async def test_callback_failure_timeout_and_repeated_submit_settle_the_waiter() 
         flow.Label(text='Text', component=failed_item),
         callback=lambda _interaction: (_ for _ in ()).throw(error),
     )
-    with pytest.raises(RuntimeError, match='callback failed'):
-        await failed.on_submit(_interaction())
+    await failed._scheduled_task(_interaction(), [], {})
     with pytest.raises(RuntimeError, match='callback failed'):
         await failed._wait()
     assert failed.is_finished()
@@ -557,7 +555,7 @@ async def test_callback_failure_timeout_and_repeated_submit_settle_the_waiter() 
 
     timed_out = _inner_modal(flow.TextDisplay('No input'))
     await timed_out.on_timeout()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(FlowTimeoutError, match='modal timed out'):
         await timed_out._wait()
     assert timed_out.is_finished()
 
@@ -587,101 +585,48 @@ async def test_callback_failure_timeout_and_repeated_submit_settle_the_waiter() 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('is_async', [False, True])
-async def test_modal_timeout_invokes_optional_sync_or_async_handler(is_async: bool) -> None:
-    """A timeout handler accepts either callable form and its return value is ignored."""
-    calls: list[str] = []
+async def test_modal_submit_callback_failure_does_not_use_discord_default_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flow-owned modal failures reach the waiter without duplicate discord.py logging."""
+    error = RuntimeError('callback failed')
+    inner_modal = _inner_modal(
+        flow.TextDisplay('Submit'),
+        callback=lambda _interaction: (_ for _ in ()).throw(error),
+    )
 
-    def sync_handler() -> str:
-        calls.append('sync')
-        return 'ignored'
-
-    async def async_handler() -> str:
-        calls.append('async')
-        return 'ignored'
-
-    handler = async_handler if is_async else sync_handler
-    inner_modal = _inner_modal(flow.TextDisplay('No input'), on_timeout=handler)
-
-    await inner_modal.on_timeout()
-
-    assert calls == ['async' if is_async else 'sync']
-    with pytest.raises(asyncio.CancelledError):
-        await inner_modal._wait()
-
-
-@pytest.mark.asyncio
-async def test_modal_timeout_handler_failure_reaches_external_result() -> None:
-    """A timeout handler failure is retained by the modal waiter and remains observable."""
-    error = RuntimeError('timeout failed')
-
-    def on_timeout() -> None:
-        raise error
-
-    inner_modal = _inner_modal(flow.TextDisplay('No input'), on_timeout=on_timeout)
-
-    await inner_modal.on_timeout()
-    with pytest.raises(RuntimeError, match='timeout failed'):
-        await inner_modal._wait()
-
-
-@pytest.mark.asyncio
-async def test_native_modal_timeout_handler_failure_is_observed_without_unhandled_task_error() -> None:
-    """Native timeout dispatch does not leave the handled timeout exception on the event loop."""
-    error = RuntimeError('timeout failed')
-    loop = asyncio.get_running_loop()
-    unhandled: list[dict[str, object]] = []
-    previous_handler = loop.get_exception_handler()
-
-    def exception_handler(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
-        unhandled.append(context)
-
-    def on_timeout() -> None:
-        raise error
-
-    loop.set_exception_handler(exception_handler)
-    try:
-        inner_modal = _inner_modal(flow.TextDisplay('No input'), on_timeout=on_timeout)
-        inner_modal._dispatch_timeout()  # type: ignore[no-untyped-call]
-        with pytest.raises(RuntimeError, match='timeout failed'):
+    with caplog.at_level('ERROR'):
+        await inner_modal._scheduled_task(_interaction(), [], {})
+        with pytest.raises(RuntimeError, match='callback failed'):
             await inner_modal._wait()
-        await asyncio.sleep(0)
-    finally:
-        loop.set_exception_handler(previous_handler)
 
-    assert unhandled == []
+    assert 'Ignoring exception in modal' not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_modal_timeout_does_not_cancel_a_submit_callback_in_progress(caplog: pytest.LogCaptureFixture) -> None:
+async def test_modal_timeout_does_not_cancel_a_submit_callback_in_progress() -> None:
     """A timeout racing an accepted submit preserves the submit callback result."""
     started = asyncio.Event()
     release = asyncio.Event()
-    timeout_error = RuntimeError('timeout failed')
 
     async def callback(_: Interaction[Client]) -> Result:
         started.set()
         await release.wait()
         return Result.finish_flow()
 
-    def on_timeout() -> None:
-        raise timeout_error
-
-    inner_modal = _inner_modal(flow.TextDisplay('Submit'), callback=callback, on_timeout=on_timeout)
+    inner_modal = _inner_modal(flow.TextDisplay('Submit'), callback=callback)
     interaction = _interaction()
     submit = asyncio.create_task(inner_modal.on_submit(interaction))
     await started.wait()
 
-    with caplog.at_level('ERROR', logger='discord.ext.flow.modal'):
-        await inner_modal.on_timeout()
-    assert not inner_modal.fut.cancelled()
+    await inner_modal.on_timeout()
+    assert not inner_modal.fut.done()
 
     release.set()
     await submit
     result = await inner_modal._wait()
     assert result._is_end
     assert result._interaction is interaction
-    assert 'Modal timeout handler failed.' in caplog.text
 
 
 @pytest.mark.asyncio
@@ -726,6 +671,7 @@ async def test_cancelling_wait_stops_an_unsubmitted_modal() -> None:
         await wait
 
     assert inner_modal.is_finished()
+    assert inner_modal.fut.cancelled()
 
 
 @pytest.mark.asyncio

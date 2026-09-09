@@ -15,12 +15,14 @@ from discord.ext.flow import (
     ActionRow,
     Button,
     ComponentV2Message,
+    FlowTimeoutError,
     LegacyMessage,
     ModalConfig,
     ModelBase,
     Result,
     TextDisplay,
     TextInput,
+    modal,
 )
 from discord.ext.flow.controller import (
     Controller,
@@ -785,7 +787,7 @@ async def test_completed_external_results_continue_after_view_replacement(
 
 @pytest.mark.asyncio
 async def test_modal_timeout_releases_its_external_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A timed-out modal does not keep a static flow waiting indefinitely."""
+    """A timed-out modal reaches the controller as a flow timeout error."""
 
     class ModalModel(_StaticModel):
         def __init__(self, controller: Controller) -> None:
@@ -803,7 +805,8 @@ async def test_modal_timeout_releases_its_external_result(monkeypatch: pytest.Mo
             asyncio.get_running_loop().call_soon(self.modal._dispatch_timeout)  # type: ignore[no-untyped-call]
 
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=_sent()))
-    controller = Controller(_StaticModel())
+    received: list[ExceptionGroup[Exception]] = []
+    controller = Controller(_StaticModel(), on_error=received.append)
     model = ModalModel(controller)
     controller.model = model
 
@@ -812,8 +815,64 @@ async def test_modal_timeout_releases_its_external_result(monkeypatch: pytest.Mo
 
     assert model.modal is not None
     assert model.modal.is_finished()
-    assert model.modal.fut.cancelled()
+    assert len(received) == 1
+    assert len(received[0].exceptions) == 1
+    assert isinstance(received[0].exceptions[0], FlowTimeoutError)
+    assert not model.modal.fut.cancelled()
     assert model.after_invoked
+
+
+@pytest.mark.asyncio
+async def test_modal_submit_failure_reaches_controller_once_without_discord_log(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A flow-owned modal submits one external failure to the controller fallback."""
+    error = RuntimeError('modal callback failed')
+    sent = asyncio.Event()
+    received: list[ExceptionGroup[Exception]] = []
+    response = SimpleNamespace(send_modal=AsyncMock())
+    send_interaction = MagicMock(spec=Interaction, **{'response.send_modal': response.send_modal})
+
+    class ModalModel(_StaticModel):
+        def __init__(self) -> None:
+            self.controller: Controller | None = None
+            self.modal: _InnerModal | None = None
+
+        async def before_invoke(self) -> None:
+            async def callback(_: Interaction) -> Result:
+                raise error
+
+            assert self.controller is not None
+            await modal.send_modal(
+                callback,
+                send_interaction,
+                ModalConfig(title='Failure'),
+                (TextDisplay('Submit'),),
+                controller=self.controller,
+            )
+            self.modal = response.send_modal.await_args.args[0]
+            assert isinstance(self.modal, _InnerModal)
+            sent.set()
+
+    async def send(*_: object) -> _Editable:
+        return _sent()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    model = ModalModel()
+    controller = Controller(model, on_error=received.append)
+    model.controller = controller
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    assert model.modal is not None
+
+    with caplog.at_level('ERROR', logger='discord.ui.modal'):
+        await model.modal._scheduled_task(_interaction(), [], {})
+        await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert len(received) == 1
+    assert received[0].exceptions == (error,)
+    assert 'Ignoring exception in modal' not in caplog.text
 
 
 @pytest.mark.asyncio
