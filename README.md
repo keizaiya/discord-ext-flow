@@ -23,10 +23,12 @@ callback for errors not handled by a model. The model handler is preferred for
 errors from that model's UI callbacks and view timeout; the controller handler
 receives the remaining UI errors, external task errors, and timeouts.
 
-Handlers receive an `ExceptionGroup` and return `None`. The group contains the
+Handlers receive an `ExceptionGroup` and may return a `Result` to recover or
+transition the flow, or `None` to only report the errors. The group contains the
 original exceptions, or `FlowTimeoutError` for a view or modal timeout. No UI item or
-interaction is supplied, and a timeout does not restart the expired view. A
-handler is intended for reporting and final fallback cleanup; it does
-not replace handling expected errors inside the callback or external operation.
+interaction is supplied. A timeout handler can replace the expired view or transition
+to another model by returning the corresponding `Result`; `None` and
+`Result.continue_flow()` allow the timeout to finish the flow. Results returned while
+cleanup is reclaiming tasks are only notified and are not applied.
 Exceptions recovered during flow cleanup propagate to the caller of
 `Controller.invoke`.

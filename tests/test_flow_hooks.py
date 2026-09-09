@@ -348,15 +348,18 @@ async def test_explicit_view_stop_does_not_notify_timeout(monkeypatch: pytest.Mo
 async def test_retiring_view_reclaims_timeout_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """A timeout discovered while retiring a view is still notified once."""
     received: list[ExceptionGroup[Exception]] = []
+    sent_messages: list[Message] = []
 
     class Model(ModelBase):
         def message(self) -> Message:
             return Message(items=(Button().on(callback=lambda _: Result.finish_flow()),))
 
-        def on_error(self, error: ExceptionGroup[Exception]) -> None:
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
             received.append(error)
+            return Result.send_message(Message(content='should not be sent'))
 
-    async def send(*_: object) -> _Editable:
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
         return _editable()
 
     monkeypatch.setattr(controller_module, 'send_helper', send)
@@ -371,4 +374,446 @@ async def test_retiring_view_reclaims_timeout_once(monkeypatch: pytest.MonkeyPat
     assert len(received) == 1
     assert len(received[0].exceptions) == 1
     assert isinstance(received[0].exceptions[0], FlowTimeoutError)
+    assert len(sent_messages) == 1
     assert not controller._tasks
+
+
+@pytest.mark.asyncio
+async def test_model_error_handler_result_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synchronous model error handler can replace a failed callback's view."""
+    callback_error = RuntimeError('callback failed')
+    received: list[ExceptionGroup[Exception]] = []
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    class Model(ModelBase):
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button(label='Fail').on(callback=self.fail),))
+
+        def fail(self, _: Interaction) -> Result:
+            raise callback_error
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            received.append(error)
+            return Result.send_message(
+                Message(
+                    content='recovered', items=(Button(label='Finish').on(callback=lambda _: Result.finish_flow()),)
+                )
+            )
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model(), on_error=lambda error: pytest.fail(f'unexpected fallback: {error}'))
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    sent.clear()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'recovered']
+    assert len(received) == 1
+    assert received[0].exceptions == (callback_error,)
+
+
+@pytest.mark.asyncio
+async def test_async_model_error_handler_result_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An asynchronous model error handler can replace a failed callback's view."""
+    callback_error = RuntimeError('callback failed')
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    class Model(ModelBase):
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button(label='Fail').on(callback=self.fail),))
+
+        def fail(self, _: Interaction) -> Result:
+            raise callback_error
+
+        async def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert error.exceptions == (callback_error,)
+            return Result.send_message(
+                Message(
+                    content='recovered', items=(Button(label='Finish').on(callback=lambda _: Result.finish_flow()),)
+                )
+            )
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model(), on_error=lambda error: pytest.fail(f'unexpected fallback: {error}'))
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    sent.clear()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'recovered']
+
+
+@pytest.mark.asyncio
+async def test_controller_error_handler_result_transitions_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A synchronous controller error handler can transition after an external error."""
+    external_error = RuntimeError('external failed')
+    sent_messages: list[Message] = []
+
+    class NextModel(ModelBase):
+        def message(self) -> Message:
+            return Message(content='next')
+
+    next_model = NextModel()
+
+    class Model(ModelBase):
+        def __init__(self, controller: Controller | None = None) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def fail() -> Result:
+                raise external_error
+
+            assert self.controller is not None
+            self.controller.create_external_result(fail)
+
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+    def on_error(error: ExceptionGroup[Exception]) -> Result:
+        assert error.exceptions == (external_error,)
+        return Result.next_model(next_model)
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    model = Model()
+    controller = Controller(model, on_error=on_error)
+    model.controller = controller
+    await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'next']
+
+
+@pytest.mark.asyncio
+async def test_async_controller_error_handler_result_transitions_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An asynchronous controller error handler can transition after an external error."""
+    external_error = RuntimeError('external failed')
+    sent_messages: list[Message] = []
+
+    class NextModel(ModelBase):
+        def message(self) -> Message:
+            return Message(content='next')
+
+    next_model = NextModel()
+
+    class Model(ModelBase):
+        def __init__(self, controller: Controller | None = None) -> None:
+            self.controller = controller
+
+        def before_invoke(self) -> None:
+            async def fail() -> Result:
+                raise external_error
+
+            assert self.controller is not None
+            self.controller.create_external_result(fail)
+
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+    async def on_error(error: ExceptionGroup[Exception]) -> Result:
+        assert error.exceptions == (external_error,)
+        return Result.next_model(next_model)
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    model = Model()
+    controller = Controller(model, on_error=on_error)
+    model.controller = controller
+    await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'next']
+
+
+@pytest.mark.asyncio
+async def test_timeout_error_handler_result_replaces_expired_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout handler can recover by sending a replacement view."""
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    class Model(ModelBase):
+        def view_config(self) -> ViewConfig:
+            return {'timeout': None}
+
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert any(isinstance(item, FlowTimeoutError) for item in error.exceptions)
+            return Result.send_message(
+                Message(content='recovered', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+            )
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    sent.clear()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    active.view._dispatch_timeout()  # type: ignore[no-untyped-call]
+    await asyncio.wait_for(sent.wait(), timeout=0.1)
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'recovered']
+
+
+@pytest.mark.asyncio
+async def test_timeout_error_handler_result_transitions_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout handler can recover by transitioning to another model."""
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    class NextModel(ModelBase):
+        def message(self) -> Message:
+            return Message(content='next')
+
+    next_model = NextModel()
+
+    class Model(ModelBase):
+        def view_config(self) -> ViewConfig:
+            return {'timeout': None}
+
+        def message(self) -> Message:
+            return Message(content='initial', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert any(isinstance(item, FlowTimeoutError) for item in error.exceptions)
+            return Result.next_model(next_model)
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    active.view._dispatch_timeout()  # type: ignore[no-untyped-call]
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'next']
+
+
+@pytest.mark.asyncio
+async def test_timeout_error_handler_continue_finishes_expired_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Continuing from a timeout does not revive the expired view."""
+    sent = asyncio.Event()
+
+    class Model(ModelBase):
+        def view_config(self) -> ViewConfig:
+            return {'timeout': None}
+
+        def message(self) -> Message:
+            return Message(items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert any(isinstance(item, FlowTimeoutError) for item in error.exceptions)
+            return Result.continue_flow()
+
+    async def send(*_: object) -> _Editable:
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    active.view._dispatch_timeout()  # type: ignore[no-untyped-call]
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert controller._active_message is None
+
+
+@pytest.mark.asyncio
+async def test_normal_replacement_is_followed_by_error_handler_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A handler result is applied to the view created by an earlier normal result."""
+    callback_error = RuntimeError('callback failed')
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    first_replacement = Message(content='first', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+    second_replacement = Message(content='second', items=(Button().on(callback=lambda _: Result.finish_flow()),))
+
+    class Model(ModelBase):
+        def message(self) -> Message:
+            return Message(
+                content='initial',
+                items=(
+                    Button(label='Replace').on(callback=self.replace),
+                    Button(label='Fail').on(callback=self.fail),
+                ),
+            )
+
+        def replace(self, _: Interaction) -> Result:
+            return Result.send_message(first_replacement)
+
+        def fail(self, _: Interaction) -> Result:
+            raise callback_error
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert error.exceptions == (callback_error,)
+            return Result.send_message(second_replacement)
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    buttons = [item for item in active.view.walk_children() if isinstance(item, ui.Button)]
+    await cast('ui.Button[_ViewType]', buttons[0]).callback(_interaction())
+    await cast('ui.Button[_ViewType]', buttons[1]).callback(_interaction())
+    await asyncio.wait_for(_wait_for_message_count(sent, sent_messages, 3), timeout=0.1)
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'first', 'second']
+
+
+@pytest.mark.asyncio
+async def test_normal_transition_discards_error_handler_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A normal transition prevents a later error handler result from overriding it."""
+    callback_error = RuntimeError('callback failed')
+    sent_messages: list[Message] = []
+    sent = asyncio.Event()
+
+    class NextModel(ModelBase):
+        def message(self) -> Message:
+            return Message(content='next')
+
+    next_model = NextModel()
+
+    class Model(ModelBase):
+        def message(self) -> Message:
+            return Message(
+                content='initial',
+                items=(
+                    Button(label='Transition').on(callback=lambda _: Result.next_model(next_model)),
+                    Button(label='Fail').on(callback=self.fail),
+                ),
+            )
+
+        def fail(self, _: Interaction) -> Result:
+            raise callback_error
+
+        def on_error(self, error: ExceptionGroup[Exception]) -> Result:
+            assert error.exceptions == (callback_error,)
+            return Result.send_message(Message(content='unexpected'))
+
+    async def send(_: object, message: Message, __: object, ___: object) -> _Editable:
+        sent_messages.append(message)
+        sent.set()
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    buttons = [item for item in active.view.walk_children() if isinstance(item, ui.Button)]
+    await cast('ui.Button[_ViewType]', buttons[0]).callback(_interaction())
+    await cast('ui.Button[_ViewType]', buttons[1]).callback(_interaction())
+    await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert [message.content for message in sent_messages] == ['initial', 'next']
+
+
+async def _wait_for_message_count(sent: asyncio.Event, messages: list[Message], count: int) -> None:
+    while len(messages) < count:
+        sent.clear()
+        await sent.wait()
+
+
+@pytest.mark.asyncio
+async def test_error_handler_invalid_result_is_reported_as_type_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-Result error handler return is treated as a handler failure."""
+    callback_error = RuntimeError('callback failed')
+
+    class Model(ModelBase):
+        def message(self) -> Message:
+            return Message(items=(Button().on(callback=self.fail),))
+
+        def fail(self, _: Interaction) -> Result:
+            raise callback_error
+
+        def on_error(self, _error: ExceptionGroup[Exception]) -> object:
+            return object()
+
+    async def send(*_: object) -> _Editable:
+        return _editable()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.sleep(0)
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(_interaction())
+    with pytest.raises(ExceptionGroup) as raised:
+        await asyncio.wait_for(invocation, timeout=0.1)
+
+    assert any(isinstance(error, TypeError) for error in raised.value.exceptions)

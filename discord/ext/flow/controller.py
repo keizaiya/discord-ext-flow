@@ -46,7 +46,7 @@ logger = getLogger(__name__)
 controller_var = ContextVar['Controller | None'](f'{__name__}.controller_var', default=None)
 _CallbackParams = ParamSpec('_CallbackParams')
 
-type ErrorCallback = Callable[[ExceptionGroup[Exception]], MaybeAwaitable[None]]
+type ErrorCallback = Callable[[ExceptionGroup[Exception]], MaybeAwaitable[Result | None]]
 
 
 class FlowTimeoutError(TimeoutError):
@@ -145,7 +145,8 @@ class Controller:
 
     Args:
         initial_model (ModelBase): Initial model. This model will be used first.
-        on_error (ErrorCallback | None): Final fallback for errors not handled by a model.
+        on_error (ErrorCallback | None): Final fallback for errors not handled by a model. It may return a
+            :class:`Result` to recover or transition the flow, or ``None`` to only report the errors.
     """
 
     model: ModelBase
@@ -438,11 +439,27 @@ class Controller:
 
         raise TypeError('Flow handler must return Result or None.')
 
+    async def _call_error_handler(
+        self,
+        handler: ErrorCallback,
+        error_group: ExceptionGroup[Exception],
+    ) -> tuple[Result | None, BaseException | None]:
+        try:
+            result = await maybe_coroutine(handler, error_group)
+        except BaseException as exception:  # noqa: BLE001
+            return None, exception
+        if result is None:
+            return None, None
+        if not isinstance(result, Result):
+            return None, TypeError('Flow error handler must return Result or None.')
+        return result, None
+
     async def _notify_errors(
         self,
         model_errors: list[tuple[ModelBase, list[Exception]]],
         controller_errors: list[Exception],
-    ) -> tuple[BaseException, ...]:
+    ) -> tuple[list[Result], tuple[BaseException, ...]]:
+        results: list[Result] = []
         failures: list[BaseException] = []
         for model, errors in model_errors:
             if not errors:
@@ -452,18 +469,20 @@ class Controller:
             if handler is None:
                 controller_errors.extend(errors)
                 continue
-            try:
-                await maybe_coroutine(handler, error_group)
-            except BaseException as exception:  # noqa: BLE001
-                failures.extend((error_group, exception))
+            result, failure = await self._call_error_handler(handler, error_group)
+            if failure is not None:
+                failures.extend((error_group, failure))
+            elif result is not None:
+                results.append(result)
         if controller_errors:
             error_group = ExceptionGroup('Errors occurred in a flow.', tuple(controller_errors))
             handler = self._error_callback if self._error_callback is not None else self.on_error
-            try:
-                await maybe_coroutine(handler, error_group)
-            except BaseException as exception:  # noqa: BLE001
-                failures.extend((error_group, exception))
-        return tuple(failures)
+            result, failure = await self._call_error_handler(handler, error_group)
+            if failure is not None:
+                failures.extend((error_group, failure))
+            elif result is not None:
+                results.append(result)
+        return results, tuple(failures)
 
     def _add_model_error(
         self,
@@ -476,6 +495,20 @@ class Controller:
                 errors.append(error)
                 return
         model_errors.append((model, [error]))
+
+    async def _apply_result_value(
+        self,
+        view: _ViewType,
+        result: Result,
+        outcome: _ResultOutcome,
+    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        try:
+            result_outcome = await self._apply_result(view, result)
+        except BaseException as error:  # noqa: BLE001
+            return _ResultOutcome(_ResultAction.FINISH_FLOW), (error,)
+        if result_outcome.action is _ResultAction.CONTINUE_BATCH and outcome.action is _ResultAction.REPLACE_VIEW:
+            return outcome, ()
+        return result_outcome, ()
 
     async def _apply_completed_result(
         self,
@@ -498,13 +531,36 @@ class Controller:
                 self._tasks.pop(record.task, None)
             return outcome, ()
         self._tasks.pop(record.task, None)
-        try:
-            result_outcome = await self._apply_result(target, result)
-        except BaseException as error:  # noqa: BLE001
-            return _ResultOutcome(_ResultAction.FINISH_FLOW), (error,)
-        if result_outcome.action is _ResultAction.CONTINUE_BATCH and outcome.action is _ResultAction.REPLACE_VIEW:
-            return outcome, ()
-        return result_outcome, ()
+        return await self._apply_result_value(target, result, outcome)
+
+    async def _apply_handler_results(
+        self,
+        results: list[Result],
+        outcome: _ResultOutcome,
+    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        for result in results:
+            if outcome.action in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW):
+                break
+            active = self._active_message
+            target = None if active is None else active.view
+            if target is None:
+                break
+            outcome, failures = await self._apply_result_value(target, result, outcome)
+            if failures:
+                return outcome, failures
+        return outcome, ()
+
+    async def _apply_collected_results(
+        self,
+        completed: list[tuple[_ResultTaskRecord, Result]],
+        handler_results: list[Result],
+    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        outcome = _ResultOutcome(_ResultAction.CONTINUE_BATCH)
+        for record, result in completed:
+            outcome, failures = await self._apply_completed_result(record, result, outcome)
+            if failures:
+                return outcome, failures
+        return await self._apply_handler_results(handler_results, outcome)
 
     def _collect_result_records(
         self,
@@ -587,18 +643,15 @@ class Controller:
             ]
             failures.extend(controller_errors)
             controller_errors = []
-        handler_failures = await self._notify_errors(model_errors, controller_errors)
+        handler_results, handler_failures = await self._notify_errors(model_errors, controller_errors)
         failures.extend(handler_failures)
         outcome = _ResultOutcome(_ResultAction.CONTINUE_BATCH)
         if not apply:
             for record, _result in completed:
                 self._tasks.pop(record.task, None)
         if not failures and apply:
-            for record, result in completed:
-                outcome, result_failures = await self._apply_completed_result(record, result, outcome)
-                failures.extend(result_failures)
-                if result_failures:
-                    break
+            outcome, result_failures = await self._apply_collected_results(completed, handler_results)
+            failures.extend(result_failures)
         if failures:
             return _ResultOutcome(_ResultAction.FINISH_FLOW), tuple(failures)
         if apply and outcome.action is _ResultAction.CONTINUE_BATCH:
@@ -712,12 +765,13 @@ class Controller:
             failures.extend(await self._reclaim_tasks(records))
         self._raise_failures('Errors occurred while draining flow tasks.', tuple(failures))
 
-    def on_error(self, error: ExceptionGroup[Exception]) -> MaybeAwaitable[None]:
+    def on_error(self, error: ExceptionGroup[Exception]) -> MaybeAwaitable[Result | None]:
         """Handle errors not handled by a model.
 
         Applications should normally catch expected exceptions inside callbacks and external result
         coroutines and return a :class:`Result`.  This hook is a final fallback for errors that escape
-        those operations and for view timeouts.
+        those operations and for view timeouts. It may return a :class:`Result` to recover or transition
+        the flow, or ``None`` to only report the errors.
         """
         logger.error('Ignoring Exceptions:', exc_info=error)
         return None
