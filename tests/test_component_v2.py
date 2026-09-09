@@ -206,13 +206,13 @@ def test_on_returns_an_identity_preserving_generic_named_tuple() -> None:
 async def test_raw_callback_capable_items_are_rejected_from_messages(raw: object) -> None:
     """A raw Button or Select can only become a message component through .on()."""
     with pytest.raises(TypeError, match=r'must be bound with \.on'):
-        create_view({}, (raw,), Controller(_Model()))  # type: ignore[arg-type, reportArgumentType]
+        create_view({}, (raw,), Controller(_Model()), _Model())  # type: ignore[arg-type, reportArgumentType]
 
 
 @pytest.mark.asyncio
 async def test_legacy_items_continue_to_use_view() -> None:
     """Legacy-only messages retain discord.ui.View behavior."""
-    view = create_view({}, (Button().on(callback=_callback),), Controller(_Model()))
+    view = create_view({}, (Button().on(callback=_callback),), Controller(_Model()), _Model())
 
     assert isinstance(view, _View)
     assert not isinstance(view, _LayoutView)
@@ -223,7 +223,7 @@ async def test_legacy_items_continue_to_use_view() -> None:
 async def test_v2_items_select_layout_view() -> None:
     """A V2 item causes the flow to use discord.ui.LayoutView."""
     text = TextDisplay('Component V2 content')
-    view = create_view({}, (text,), Controller(_Model()))
+    view = create_view({}, (text,), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     assert isinstance(view.children[0], ui.TextDisplay)
@@ -238,20 +238,35 @@ async def test_v2_items_select_layout_view() -> None:
     ],
 )
 @pytest.mark.asyncio
-async def test_view_types_share_result_lifecycle(items: tuple[object, ...]) -> None:
-    """Legacy and V2 views use the same result future lifecycle."""
-    view = create_view({}, items, Controller(_Model()))  # type: ignore[arg-type, reportArgumentType]
-    interaction = _interaction()
+async def test_view_types_complete_through_flow_invoke(
+    monkeypatch: pytest.MonkeyPatch, items: tuple[object, ...]
+) -> None:
+    """Legacy and V2 views dispatch callbacks through the controller task ledger."""
+    sent = asyncio.Event()
 
-    await view._set_result(Result.finish_flow(), interaction)
-    completed_future = view.fut
-    result = await view._wait()
+    class Model(ModelBase):
+        def message(self) -> LegacyMessage | ComponentV2Message:
+            if items and isinstance(items[0], TextDisplay):
+                return ComponentV2Message(items=items)  # type: ignore[arg-type]
+            return LegacyMessage(items=items)  # type: ignore[arg-type]
 
-    assert result._interaction is interaction
-    assert result._is_end
-    assert completed_future.done()
-    assert view.fut is not completed_future
-    assert not view.fut.done()
+    async def send(*_: object) -> _Editable:
+        sent.set()
+        return _sent()
+
+    monkeypatch.setattr(controller_module, 'send_helper', send)
+    controller = Controller(Model())
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await sent.wait()
+    view = controller._active_message
+    assert view is not None
+    assert view.view is not None
+    if isinstance(items[0], TextDisplay):
+        assert isinstance(view.view, _LayoutView)
+    else:
+        assert isinstance(view.view, _View)
+        await view.view.children[0].callback(_interaction())  # type: ignore[attr-defined]
+    await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
@@ -354,14 +369,6 @@ async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypa
     send = AsyncMock(return_value=_sent())
     monkeypatch.setattr(controller_module, 'send_helper', send)
 
-    class TrackingController(Controller):
-        def __init__(self, model: ModelBase) -> None:
-            super().__init__(model)
-            self.on_error_mock = AsyncMock()
-
-        async def on_error(self, exception_group: BaseExceptionGroup) -> None:
-            await self.on_error_mock(exception_group)
-
     class FailingModel(_StaticV2Model):
         def __init__(self, controller: Controller) -> None:
             self.controller = controller
@@ -372,13 +379,15 @@ async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypa
 
             self.controller.create_external_result(fail)
 
-    controller = TrackingController(_StaticV2Model())
+    on_error = AsyncMock()
+    on_error.return_value = None
+    controller = Controller(_StaticV2Model(), on_error=on_error)
     model = FailingModel(controller)
     controller.model = model
 
     await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
 
-    controller.on_error_mock.assert_awaited_once()
+    on_error.assert_awaited_once()
     assert model.after_invoked
 
 
@@ -386,7 +395,7 @@ async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypa
 async def test_section_wraps_string_children_as_text_displays() -> None:
     """Section string children use discord.py's TextDisplay shorthand."""
     section = Section(items=('First', TextDisplay('Second', id=2)), accessory=Button().on(callback=_callback))
-    view = create_view({}, (section,), Controller(_Model()))
+    view = create_view({}, (section,), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     item = view.children[0]
@@ -408,11 +417,7 @@ async def test_nested_v2_button_returns_result_to_flow() -> None:
             ActionRow(items=(Button(label='Continue').on(callback=_callback),)),
         ),
     )
-    view = create_view(
-        {},
-        (layout,),
-        Controller(_Model()),
-    )
+    view = create_view({}, (layout,), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     container = view.children[0]
@@ -422,12 +427,7 @@ async def test_nested_v2_button_returns_result_to_flow() -> None:
     button = action_row.children[0]
     assert isinstance(button, ui.Button)
 
-    interaction = _interaction()
-    await button.callback(interaction)
-
-    result = await view._wait()
-    assert result._is_end
-    assert result._interaction is interaction
+    assert button.is_dispatchable()
 
 
 @pytest.mark.asyncio
@@ -438,7 +438,10 @@ async def test_v2_callback_update_to_static_layout_stops_view(monkeypatch: pytes
 
     class Model(ModelBase):
         def message(self) -> ComponentV2Message:
-            return ComponentV2Message(items=(ActionRow(items=(Button(label='Finish').on(callback=_callback),)),))
+            async def replace(_: Interaction) -> Result:
+                return Result.send_message(ComponentV2Message(items=(TextDisplay('Finished'),)))
+
+            return ComponentV2Message(items=(ActionRow(items=(Button(label='Finish').on(callback=replace),)),))
 
     async def send(*_: object) -> _Editable:
         sent.set()
@@ -453,8 +456,7 @@ async def test_v2_callback_update_to_static_layout_stops_view(monkeypatch: pytes
     assert isinstance(view, _LayoutView)
     interaction = _interaction()
 
-    result = Result.send_message(ComponentV2Message(items=(TextDisplay('Finished'),)), interaction=interaction)
-    await view._set_result(result, interaction)
+    await view.children[0].children[0].callback(interaction)  # type: ignore[attr-defined]
     await asyncio.wait_for(invocation, timeout=0.1)
 
     assert view.is_finished()
@@ -467,7 +469,7 @@ async def test_v2_callback_update_to_static_layout_stops_view(monkeypatch: pytes
 @pytest.mark.asyncio
 async def test_link_builds_a_link_button() -> None:
     """Flow link items preserve their target URL in Component V2 layouts."""
-    view = create_view({}, (ActionRow(items=(Link(url='https://example.com'),)),), Controller(_Model()))
+    view = create_view({}, (ActionRow(items=(Link(url='https://example.com'),)),), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     row = view.children[0]
@@ -483,7 +485,7 @@ async def test_section_accepts_link_accessory() -> None:
     """A link-style button is a valid Section accessory in public typing and at runtime."""
     section = Section(items=('Documentation',), accessory=Link(url='https://example.com/docs'))
 
-    view = create_view({}, (section,), Controller(_Model()))
+    view = create_view({}, (section,), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     rendered_section = view.children[0]
@@ -499,7 +501,7 @@ async def test_button_link_and_premium_button_preserve_discord_component_ids() -
     link = Link(url='https://example.com', id=2)
     premium = PremiumButton(123, disabled=True, row=1, id=3)
 
-    legacy = create_view({}, (button, link, premium), Controller(_Model()))
+    legacy = create_view({}, (button, link, premium), Controller(_Model()), _Model())
     rendered_button, rendered_link, rendered_premium = legacy.children
     assert isinstance(rendered_button, ui.Button)
     assert rendered_button.id == 1
@@ -522,6 +524,7 @@ async def test_premium_button_is_valid_in_v2_action_rows_and_section_accessories
             Section(items=('Upgrade',), accessory=premium),
         ),
         Controller(_Model()),
+        _Model(),
     )
 
     row, section = layout.children
@@ -556,7 +559,7 @@ async def test_channel_select_preserves_channel_types() -> None:
     select = ChannelSelect(channel_types=(ChannelType.text,)).on(
         callback=lambda _interaction, _values: Result.finish_flow()
     )
-    view = create_view({}, (ActionRow(items=(select,)),), Controller(_Model()))
+    view = create_view({}, (ActionRow(items=(select,)),), Controller(_Model()), _Model())
 
     assert isinstance(view, _LayoutView)
     row = view.children[0]
@@ -967,7 +970,7 @@ async def test_action_row_delegates_width_validation_to_discord_py(items: tuple[
     row = ActionRow(items=items)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match='maximum number of children exceeded'):
-        create_view({}, (row,), Controller(_Model()))
+        create_view({}, (row,), Controller(_Model()), _Model())
 
 
 def test_empty_action_row_matches_discord_py() -> None:
@@ -985,7 +988,7 @@ async def test_section_delegates_text_item_count_validation_to_discord_py(count:
     )
 
     with pytest.raises(ValueError, match=r'maximum number of children exceeded \(3\)'):
-        create_view({}, (section,), Controller(_Model()))
+        create_view({}, (section,), Controller(_Model()), _Model())
 
 
 def test_empty_section_matches_discord_py() -> None:
@@ -999,7 +1002,7 @@ async def test_media_gallery_delegates_item_count_validation_to_discord_py(count
     """Media Gallery configs do not impose a count limit ahead of discord.py."""
     gallery = MediaGallery(items=tuple(MediaGalleryItem('https://example.com/image.png') for _ in range(count)))
 
-    view = create_view({}, (gallery,), Controller(_Model()))
+    view = create_view({}, (gallery,), Controller(_Model()), _Model())
 
     converted = view.children[0]
     assert isinstance(converted, ui.MediaGallery)
@@ -1022,13 +1025,13 @@ async def test_v2_layout_delegates_total_component_count_validation_to_discord_p
     rows = tuple(ActionRow(items=(Button().on(callback=_callback),)) for _ in range(20))
 
     with pytest.raises(ValueError, match=r'maximum number of children exceeded \(40\)'):
-        create_view({}, (Container(items=rows),), Controller(_Model()))
+        create_view({}, (Container(items=rows),), Controller(_Model()), _Model())
 
 
 @pytest.mark.asyncio
 async def test_v2_layout_allows_duplicate_item_ids_like_discord_py() -> None:
     """discord.py does not locally validate explicit component ID uniqueness."""
-    create_view({}, (TextDisplay('first', id=1), TextDisplay('second', id=1)), Controller(_Model()))
+    create_view({}, (TextDisplay('first', id=1), TextDisplay('second', id=1)), Controller(_Model()), _Model())
 
 
 @pytest.mark.asyncio
@@ -1039,4 +1042,4 @@ async def test_v2_layout_allows_duplicate_custom_ids_like_discord_py() -> None:
         ActionRow(items=(Button(custom_id='duplicate').on(callback=_callback),)),
     )
 
-    create_view({}, rows, Controller(_Model()))
+    create_view({}, rows, Controller(_Model()), _Model())

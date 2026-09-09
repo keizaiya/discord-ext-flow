@@ -24,10 +24,7 @@ from discord.ext.flow import (
 )
 from discord.ext.flow.controller import (
     Controller,
-    _CompletedResult,
     _ResultAction,
-    _ResultBatch,
-    _ViewResultWaiter,
 )
 from discord.ext.flow.modal import _InnerModal
 from discord.ext.flow.util import _Editable, force_cancel_tasks
@@ -141,19 +138,19 @@ async def test_disabled_only_replacement_stops_active_view(monkeypatch: pytest.M
 
     send_mock = AsyncMock(side_effect=send)
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    controller = Controller(_InteractiveModel())
+    replacement_message = LegacyMessage(items=(Button(disabled=True).on(callback=_finish),))
+
+    class Model(ModelBase):
+        def message(self) -> LegacyMessage:
+            return LegacyMessage(items=(Button().on(callback=lambda _: Result.send_message(replacement_message)),))
+
+    controller = Controller(Model())
     invocation = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(sent.wait(), timeout=0.1)
     view = send_mock.await_args_list[0].args[2]
     interaction = _interaction()
 
-    await view._set_result(
-        Result.send_message(
-            LegacyMessage(items=(Button(disabled=True).on(callback=_finish),)),
-            interaction=interaction,
-        ),
-        interaction,
-    )
+    await _first_button(view).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
     assert view.is_finished()
@@ -203,8 +200,12 @@ async def test_new_message_replacement_finalizes_each_message_with_its_own_flag(
 
     class Model(ModelBase):
         def message(self) -> ComponentV2Message:
+            def replace(_: Interaction) -> Result:
+                return Result.send_message(replacement)
+
+            callback = replace if source == 'callback' else _finish
             return ComponentV2Message(
-                items=(ActionRow(items=(Button(label='Initial').on(callback=_finish),)),),
+                items=(ActionRow(items=(Button(label='Initial').on(callback=callback),)),),
                 disable_items=True,
             )
 
@@ -222,7 +223,7 @@ async def test_new_message_replacement_finalizes_each_message_with_its_own_flag(
 
     initial_view = send_mock.await_args_list[0].args[2]
     if source == 'callback':
-        await initial_view._set_result(Result.send_message(replacement), interaction)
+        await _first_button(initial_view).callback(interaction)
     else:
         release_external.set()
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
@@ -237,7 +238,7 @@ async def test_new_message_replacement_finalizes_each_message_with_its_own_flag(
     assert not replacement_button.disabled
     assert not invocation.done()
 
-    await replacement_view._set_result(Result.finish_flow(), interaction)
+    await _first_button(replacement_view).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
     assert events == expected_events
@@ -250,8 +251,8 @@ async def test_edit_original_replacement_overwrites_without_disabling_previous_v
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Editing the active message replaces its controls instead of finalizing the old representation first."""
-    initial_sent = asyncio.Event()
     replacement_sent = asyncio.Event()
+    initial_sent = asyncio.Event()
     initial_edit = _editable()
     replacement_edit = _editable(message_id=initial_edit.id)
     initial_edit_mock = cast('AsyncMock', initial_edit.edit)
@@ -267,8 +268,11 @@ async def test_edit_original_replacement_overwrites_without_disabling_previous_v
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
 
     class Model(ModelBase):
+        def replace(self, _: Interaction) -> Result:
+            return Result.send_message(replacement)
+
         def message(self) -> LegacyMessage:
-            return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
+            return LegacyMessage(items=(Button(label='Initial').on(callback=self.replace),), disable_items=True)
 
     controller = Controller(Model())
     invocation = asyncio.create_task(controller.invoke(_messageable()))
@@ -281,13 +285,13 @@ async def test_edit_original_replacement_overwrites_without_disabling_previous_v
         items=(Button(label='Replacement').on(callback=_finish),),
         edit_original=True,
     )
-    await initial_view._set_result(Result.send_message(replacement), interaction)
+    await _first_button(initial_view).callback(interaction)
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
 
     initial_edit_mock.assert_not_awaited()
     assert send_mock.await_args_list[1].args[3] is initial_edit
     replacement_view = send_mock.await_args_list[1].args[2]
-    await replacement_view._set_result(Result.finish_flow(), interaction)
+    await _first_button(replacement_view).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
@@ -314,7 +318,7 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
         disable_items=True,
     )
     view_config: ViewConfig = {'timeout': 42.0}
-    initial_view = create_view(view_config, initial_config.items or (), controller)
+    initial_view = create_view(view_config, initial_config.items or (), controller, controller.model)
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=initial_message))
     await controller._send_and_activate_message(_messageable(), initial_config, initial_view, None)
 
@@ -368,8 +372,11 @@ async def test_failed_replacement_send_finalizes_previous_message_in_invoke_clea
     monkeypatch.setattr(controller_module, 'send_helper', send_mock)
 
     class InitialModel(ModelBase):
+        def callback(self, _: Interaction) -> Result:
+            return result
+
         def message(self) -> LegacyMessage:
-            return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
+            return LegacyMessage(items=(Button(label='Initial').on(callback=self.callback),), disable_items=True)
 
     class ReplacementModel(ModelBase):
         def message(self) -> LegacyMessage:
@@ -386,7 +393,7 @@ async def test_failed_replacement_send_finalizes_previous_message_in_invoke_clea
         if replacement_kind == 'message'
         else Result.next_model(ReplacementModel())
     )
-    await initial_view._set_result(result, interaction)
+    await _first_button(initial_view).callback(interaction)
 
     with pytest.raises(RuntimeError, match='replacement failed'):
         await asyncio.wait_for(invocation, timeout=0.1)
@@ -424,7 +431,7 @@ async def test_invoke_groups_flow_and_cleanup_failures(monkeypatch: pytest.Monke
     view = controller._active_message
     assert view is not None
     assert view.view is not None
-    await view.view._set_result(Result.finish_flow(), _interaction())
+    await _first_button(view.view).callback(_interaction())
 
     with pytest.raises(ExceptionGroup) as raised:
         await asyncio.wait_for(invocation, timeout=0.1)
@@ -458,7 +465,7 @@ async def test_invoke_preserves_cleanup_failure_without_flow_failure(monkeypatch
     await asyncio.wait_for(sent.wait(), timeout=0.1)
     assert captured_view is not None
     view = captured_view
-    await view._set_result(Result.finish_flow(), _interaction())
+    await _first_button(view).callback(_interaction())
 
     with pytest.raises(RuntimeError, match='cleanup failed'):
         await asyncio.wait_for(invocation, timeout=0.1)
@@ -534,7 +541,7 @@ async def test_reused_controller_clears_stale_external_task_event(monkeypatch: p
     assert not invocation.done()
     assert not controller._external_task_event.is_set()
     view = send.await_args_list[-1].args[2]
-    await view._set_result(Result.finish_flow(), _interaction())
+    await _first_button(view).callback(_interaction())
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
@@ -583,15 +590,29 @@ async def test_unprocessed_persistent_results_continue_into_next_models(monkeypa
 async def test_view_model_result_precedes_simultaneous_external_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A direct component transition wins before a completed external replacement."""
     interaction = _interaction()
-    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
     next_message = LegacyMessage(content='Next model', items=())
     external_message = LegacyMessage(content='External replacement', items=())
+    ui_ready = asyncio.Event()
+    ui_release = asyncio.Event()
+    ui_completed = asyncio.Event()
+    external_completed = asyncio.Event()
+    external_release = asyncio.Event()
 
     class NextModel(ModelBase):
         def message(self) -> LegacyMessage:
             return next_message
 
     next_model = NextModel()
+
+    async def transition(_: Interaction) -> Result:
+        ui_ready.set()
+        await ui_release.wait()
+        try:
+            return Result.next_model(next_model, interaction=interaction)
+        finally:
+            ui_completed.set()
+
+    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=transition),))
 
     class InitialModel(ModelBase):
         def __init__(self, controller: Controller) -> None:
@@ -600,13 +621,15 @@ async def test_view_model_result_precedes_simultaneous_external_message(monkeypa
 
         def before_invoke(self) -> None:
             async def replace_message() -> Result:
-                return Result.send_message(external_message, interaction=interaction)
+                await external_release.wait()
+                try:
+                    return Result.send_message(external_message, interaction=interaction)
+                finally:
+                    external_completed.set()
 
             self.external_task = self.controller.create_external_result(replace_message)
 
-        async def message(self) -> LegacyMessage:
-            assert self.external_task is not None
-            await self.external_task.task
+        def message(self) -> LegacyMessage:
             return initial_message
 
     sent_messages: list[LegacyMessage] = []
@@ -614,14 +637,19 @@ async def test_view_model_result_precedes_simultaneous_external_message(monkeypa
     async def send(_: object, message: LegacyMessage, view: _ViewType, __: object) -> _Editable:
         sent_messages.append(message)
         if message is initial_message:
-            await view._set_result(Result.next_model(next_model), interaction)
+            await _first_button(view).callback(interaction)
+            await ui_ready.wait()
+            external_release.set()
+            ui_release.set()
+            await external_completed.wait()
+            await ui_completed.wait()
         return _sent()
 
     monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
     controller = Controller(_StaticModel())
     controller.model = InitialModel(controller)
-
-    await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.wait_for(invocation, timeout=0.1)
 
     assert sent_messages == [initial_message, next_message, external_message]
 
@@ -632,9 +660,23 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
 ) -> None:
     """A replacement remains interactive after a simultaneous component continue result."""
     interaction = _interaction()
-    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
-    replacement_message = LegacyMessage(items=(Button(label='Replacement').on(callback=_finish),))
+    ui_ready = asyncio.Event()
+    ui_release = asyncio.Event()
+    ui_completed = asyncio.Event()
+    external_release = asyncio.Event()
+    external_completed = asyncio.Event()
     replacement_sent = asyncio.Event()
+
+    async def continue_flow(_: Interaction) -> Result:
+        ui_ready.set()
+        await ui_release.wait()
+        try:
+            return Result.continue_flow()
+        finally:
+            ui_completed.set()
+
+    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=continue_flow),))
+    replacement_message = LegacyMessage(items=(Button(label='Replacement').on(callback=_finish),))
 
     class InitialModel(ModelBase):
         def __init__(self, controller: Controller) -> None:
@@ -643,13 +685,15 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
 
         def before_invoke(self) -> None:
             async def replace_message() -> Result:
-                return Result.send_message(replacement_message, interaction=interaction)
+                await external_release.wait()
+                try:
+                    return Result.send_message(replacement_message, interaction=interaction)
+                finally:
+                    external_completed.set()
 
             self.external_task = self.controller.create_external_result(replace_message)
 
-        async def message(self) -> LegacyMessage:
-            assert self.external_task is not None
-            await self.external_task.task
+        def message(self) -> LegacyMessage:
             return initial_message
 
     sent_views: list[_ViewType] = []
@@ -657,7 +701,12 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
     async def send(_: object, message: LegacyMessage, view: _ViewType, __: object) -> _Editable:
         sent_views.append(view)
         if message is initial_message:
-            await view._set_result(Result.continue_flow(), interaction)
+            await _first_button(view).callback(interaction)
+            await ui_ready.wait()
+            external_release.set()
+            ui_release.set()
+            await external_completed.wait()
+            await ui_completed.wait()
         else:
             replacement_sent.set()
         return _sent()
@@ -668,264 +717,70 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
     invocation = asyncio.create_task(controller.invoke(_messageable()))
 
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
-    await asyncio.sleep(0)
 
     replacement_view = sent_views[-1]
     assert not invocation.done()
     assert not replacement_view.is_finished()
 
-    await replacement_view._set_result(Result.finish_flow(), interaction)
+    await _first_button(replacement_view).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
-async def test_result_waiter_consumes_external_results_as_they_are_yielded() -> None:
-    """A result batch preserves external tasks until their results are yielded."""
-    controller = Controller(_StaticModel())
-
-    async def finish() -> Result:
-        return Result.finish_flow()
-
-    tasks = {controller.create_external_result(finish), controller.create_external_result(finish)}
-    await asyncio.gather(*(task.task for task in tasks))
-    view = create_view({}, (TextDisplay('Waiting'),), controller)
-
-    async with _ViewResultWaiter(controller, view) as waiter:
-        batch = await waiter.wait()
-
-        assert isinstance(batch, tuple)
-        assert isinstance(batch.exceptions, tuple)
-        assert isinstance(batch.base_exceptions, tuple)
-        assert iter(batch.results) is batch.results
-        assert waiter.external_tasks == tasks
-
-        completed = next(batch.results)
-
-        assert completed.source in tasks
-        assert completed.source not in waiter.external_tasks
-        assert len(waiter.external_tasks) == 1
-
-    assert controller.external_tasks == tasks - {completed.source}
-    view.stop()
-    view.fut.cancel()
-
-
-@pytest.mark.asyncio
-async def test_result_waiter_appends_view_timeout_after_completed_results() -> None:
-    """A view timeout shares its batch with completed view and external result sources."""
-    controller = Controller(_StaticModel())
-    interaction = _interaction()
-    view_model = _StaticModel()
-    view_result = Result.next_model(view_model, interaction=interaction)
-    external_message = LegacyMessage(content='External result')
-    external_result = Result.send_message(external_message, interaction=interaction)
-
-    async def complete_external() -> Result:
-        return external_result
-
-    external_task = controller.create_external_result(complete_external)
-    await external_task.task
-    view = create_view({}, (Button(label='Finish').on(callback=_finish),), controller)
-    await view._set_result(view_result, interaction)
-    view.stop()
-
-    async with _ViewResultWaiter(controller, view) as waiter:
-        batch = await waiter.wait()
-        completed = tuple(batch.results)
-
-    assert batch.view_finished
-    assert [item.result for item in completed] == [view_result, external_result]
-    assert completed[0].source is None
-    assert completed[1].source is external_task
-    assert not controller.external_tasks
-    view.fut.cancel()
-
-
-@pytest.mark.asyncio
-async def test_view_timeout_runs_completed_model_transition_before_finishing(
+async def test_completed_external_results_continue_after_view_replacement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A completed model transition precedes the terminal timeout at the end of its batch."""
-    controller = Controller(_StaticModel())
+    """A replacement does not discard another completed persistent result from the same batch."""
+    initial_sent = asyncio.Event()
+    second_replacement_sent = asyncio.Event()
     interaction = _interaction()
-    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
-    next_model = _StaticModel()
-    result = Result.next_model(next_model, interaction=interaction)
-    send_mock = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    initial_view = create_view({}, initial_message.items or (), controller)
-    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
+    initial = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
+    first = LegacyMessage(items=(Button(label='First').on(callback=_finish),))
+    second = LegacyMessage(items=(Button(label='Second').on(callback=_finish),))
+    send_messages: list[LegacyMessage] = []
 
-    async def finish_wait(waiter: _ViewResultWaiter) -> _ResultBatch:
-        waiter.view.stop()
-        return _ResultBatch(iter((_CompletedResult(result, source=None),)), view_finished=True)
-
-    monkeypatch.setattr(_ViewResultWaiter, 'wait', finish_wait)
-
-    transition = await controller._wait_result(initial_view)
-
-    assert transition == (next_model, interaction)
-    assert send_mock.await_count == 1
-
-    await controller._finalize_active_message()
-
-
-@pytest.mark.asyncio
-async def test_view_timeout_switches_to_completed_external_message_replacement(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An external replacement remains interactive when the prior view times out in the same batch."""
-    controller = Controller(_StaticModel())
-    interaction = _interaction()
-    cast('AsyncMock', interaction.response.is_done).return_value = True
-    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
-    replacement_message = LegacyMessage(items=(Button(label='Replacement').on(callback=_finish),))
-    replacement_result = Result.send_message(replacement_message, interaction=interaction)
-
-    async def replace_message() -> Result:
-        return replacement_result
-
-    external_task = controller.create_external_result(replace_message)
-    await external_task.task
-    replacement_sent = asyncio.Event()
-    sent_views: list[_ViewType] = []
-
-    async def send(_: object, message: LegacyMessage, view: _ViewType, __: object) -> _Editable:
-        sent_views.append(view)
-        if message is replacement_message:
-            replacement_sent.set()
+    async def send(_: object, message: LegacyMessage, __: _ViewType | None, ___: object) -> _Editable:
+        send_messages.append(message)
+        if len(send_messages) == 1:
+            initial_sent.set()
+        elif len(send_messages) == 3:
+            second_replacement_sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
-    initial_view = create_view({}, initial_message.items or (), controller)
-    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
-    original_wait = _ViewResultWaiter.wait
-
-    async def finish_initial_wait(waiter: _ViewResultWaiter) -> _ResultBatch:
-        if waiter.view is initial_view:
-            await waiter._take_registered_tasks()
-            waiter.view.stop()
-            batch = waiter._collect_external_results()
-            return _ResultBatch(
-                batch.results,
-                batch.exceptions,
-                batch.base_exceptions,
-                view_finished=True,
-            )
-        return await original_wait(waiter)
-
-    monkeypatch.setattr(_ViewResultWaiter, 'wait', finish_initial_wait)
-    waiting = asyncio.create_task(controller._wait_result(initial_view))
-    await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
-    await asyncio.sleep(0)
-
-    replacement_view = sent_views[-1]
-    assert not waiting.done()
-    assert not replacement_view.is_finished()
-
-    await replacement_view._set_result(Result.finish_flow(), interaction)
-    assert await asyncio.wait_for(waiting, timeout=0.1) is None
-
-    await controller._finalize_active_message()
-
-
-@pytest.mark.asyncio
-async def test_continue_result_ignores_a_replaced_view_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Continue does not terminate the active replacement because the prior view was stopped."""
-    interaction = _interaction()
-    controller = Controller(_StaticModel())
-    initial_message = LegacyMessage(items=(Button(label='Initial').on(callback=_finish),))
-    replacement_message = LegacyMessage(items=(Button(label='Replacement').on(callback=_finish),))
-    initial_view = create_view({}, initial_message.items or (), controller)
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=_sent()))
-    await controller._send_and_activate_message(_messageable(), initial_message, initial_view, None)
-    await initial_view._set_result(Result.continue_flow(), interaction)
-    continue_result = await initial_view._wait()
-
-    outcome = await controller._apply_result(
-        initial_view,
-        Result.send_message(replacement_message, interaction=interaction),
-    )
-    continue_outcome = await controller._apply_result(initial_view, continue_result)
-
-    assert outcome.action is _ResultAction.REPLACE_VIEW
-    assert initial_view.is_finished()
-    assert controller._active_message is not None
-    assert controller._active_message.view is not None
-    assert not controller._active_message.view.is_finished()
-    assert continue_outcome.action is _ResultAction.CONTINUE_BATCH
-
-    await controller._finalize_active_message()
-
-
-@pytest.mark.asyncio
-async def test_view_timeout_completes_controller_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A discord.py view timeout also completes the flow's result wait."""
-    sent = asyncio.Event()
-    captured_view: _ViewType | None = None
-
-    async def send(_: object, __: object, view: _ViewType, ___: object) -> _Editable:
-        nonlocal captured_view
-        captured_view = view
-        sent.set()
-        return _sent()
-
-    monkeypatch.setattr(controller_module, 'send_helper', send)
-    invoke = asyncio.create_task(Controller(_InteractiveModel()).invoke(_messageable()))
-    await asyncio.wait_for(sent.wait(), timeout=0.1)
-
-    assert captured_view is not None
-    captured_view._dispatch_timeout()  # type: ignore[no-untyped-call]
-    await asyncio.wait_for(invoke, timeout=0.1)
-
-    assert captured_view.is_finished()
-
-
-@pytest.mark.asyncio
-async def test_view_timeout_during_external_error_handler_completes_controller_wait(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A timeout observed while handling an external error still completes the flow."""
-    sent = asyncio.Event()
-    error_started = asyncio.Event()
-    release_error = asyncio.Event()
-    captured_view: _ViewType | None = None
-
-    class WaitingErrorController(Controller):
-        async def on_error(self, _exception_group: BaseExceptionGroup) -> None:
-            error_started.set()
-            await release_error.wait()
-
-    class FailingModel(_InteractiveModel):
-        def __init__(self, controller: Controller) -> None:
-            self.controller = controller
+    class Model(ModelBase):
+        def __init__(self) -> None:
+            self.controller: Controller | None = None
 
         def before_invoke(self) -> None:
-            async def fail() -> Result:
-                raise RuntimeError('external task failed')
+            assert self.controller is not None
 
-            self.controller.create_external_result(fail)
+            async def first_result() -> Result:
+                return Result.send_message(first, interaction=interaction)
 
-    async def send(_: object, __: object, view: _ViewType, ___: object) -> _Editable:
-        nonlocal captured_view
-        captured_view = view
-        sent.set()
-        return _sent()
+            async def second_result() -> Result:
+                return Result.send_message(second, interaction=interaction)
+
+            self.controller.create_external_result(first_result)
+            self.controller.create_external_result(second_result)
+
+        def message(self) -> LegacyMessage:
+            return initial
 
     monkeypatch.setattr(controller_module, 'send_helper', send)
-    controller = WaitingErrorController(_InteractiveModel())
-    model = FailingModel(controller)
-    controller.model = model
-    invoke = asyncio.create_task(controller.invoke(_messageable()))
-    await asyncio.wait_for(sent.wait(), timeout=0.1)
-    await asyncio.wait_for(error_started.wait(), timeout=0.1)
+    model = Model()
+    controller = Controller(model)
+    model.controller = controller
+    invocation = asyncio.create_task(controller.invoke(_messageable()))
+    await asyncio.wait_for(initial_sent.wait(), timeout=0.1)
+    await asyncio.wait_for(second_replacement_sent.wait(), timeout=0.1)
 
-    assert captured_view is not None
-    captured_view._dispatch_timeout()  # type: ignore[no-untyped-call]
-    release_error.set()
-    await asyncio.wait_for(invoke, timeout=0.1)
-
-    assert captured_view.is_finished()
+    assert send_messages == [initial, first, second]
+    assert not invocation.done()
+    active = controller._active_message
+    assert active is not None
+    assert active.view is not None
+    await _first_button(active.view).callback(interaction)
+    await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
@@ -997,7 +852,7 @@ async def test_cancelled_external_result_does_not_preempt_view_result(monkeypatc
     model.task.cancel()
     await asyncio.sleep(0)
     assert captured_view is not None
-    await captured_view._set_result(Result.finish_flow(), _interaction())
+    await _first_button(captured_view).callback(_interaction())
     await asyncio.wait_for(invoke, timeout=0.1)
 
     assert model.task.task.cancelled()

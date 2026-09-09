@@ -747,9 +747,10 @@ async def test_send_modal_sends_once_and_registers_a_model_lifetime_task() -> No
     sent = response.send_modal.await_args.args[0]
     assert isinstance(sent, _InnerModal)
     assert sent.title == 'Send'
-    assert task in controller.external_tasks
+    assert task.task in controller._tasks
     assert task._lifetime is ExternalTaskLifeTime.MODEL
     task.cancel()
+    await asyncio.gather(task.task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -781,7 +782,7 @@ async def test_send_modal_response_failure_does_not_register_an_external_task() 
             controller=controller,
         )
 
-    assert not controller.external_tasks
+    assert not controller._tasks
 
 
 @pytest.mark.asyncio

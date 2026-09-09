@@ -283,7 +283,13 @@ def create_message(  # noqa: PLR0913
 
 
 class ModelBase:
-    """The base class that all models must inherit from."""
+    """The base class that all models must inherit from.
+
+    A model may optionally define ``on_error(error: ExceptionGroup[Exception])``.
+    It receives only this model's UI callback errors and view timeouts after
+    those operations have failed to handle them themselves. External task
+    errors are always sent to the controller's fallback handler.
+    """
 
     def before_invoke(self) -> MaybeAwaitable[Any]:
         """This method is called before sending message."""
