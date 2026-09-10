@@ -14,11 +14,11 @@ from .item import (
     Label,
     Section,
     TextInput,
+    items_can_produce_result,
 )
 from .modal import ModalConfig, send_modal
 from .model import ComponentV2Message, LegacyMessage
 from .result import Result, _ResultTypeEnum
-from .util import items_can_produce_result
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence

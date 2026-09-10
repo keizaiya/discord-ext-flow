@@ -6,10 +6,9 @@ from io import BytesIO
 from itertools import count
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, assert_type
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
-import discord.ext.flow.controller as controller_module
-import discord.ext.flow.util as util_module
+import discord.ext.flow.display as display_module
 import pytest
 from discord import (
     ChannelType,
@@ -20,6 +19,8 @@ from discord import (
     Interaction,
     InteractionResponseType,
     MediaGalleryItem,
+    Message as DiscordMessage,
+    PartialMessage,
     Poll,
     ui,
 )
@@ -48,7 +49,7 @@ from discord.ext.flow import (
     create_message,
 )
 from discord.ext.flow.controller import Controller
-from discord.ext.flow.util import _Editable, into_edit_kwargs, into_send_kwargs, send_helper
+from discord.ext.flow.display import FlowDisplay, into_edit_kwargs, into_send_kwargs
 from discord.ext.flow.view import _LayoutView, _View, create_view
 
 if TYPE_CHECKING:
@@ -70,14 +71,14 @@ def _messageable() -> Messageable:
 _message_ids = count(1)
 
 
-def _editable(*, message_id: int | None = None) -> _Editable:
+def _editable(*, message_id: int | None = None) -> PartialMessage:
     """Create a typed editable-message double when it is not exercised by the test."""
-    editable = MagicMock(spec=_Editable)
+    editable = MagicMock(spec=PartialMessage)
     editable.id = next(_message_ids) if message_id is None else message_id
     return editable
 
 
-def _sent(message: _Editable | None = None) -> _Editable:
+def _sent(message: PartialMessage | None = None) -> PartialMessage:
     return _editable() if message is None else message
 
 
@@ -250,30 +251,29 @@ async def test_view_types_complete_through_flow_invoke(
                 return ComponentV2Message(items=items)  # type: ignore[arg-type]
             return LegacyMessage(items=items)  # type: ignore[arg-type]
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     controller = Controller(Model())
     invocation = asyncio.create_task(controller.invoke(_messageable()))
     await sent.wait()
-    view = controller._active_message
+    view = controller._display.view
     assert view is not None
-    assert view.view is not None
     if isinstance(items[0], TextDisplay):
-        assert isinstance(view.view, _LayoutView)
+        assert isinstance(view, _LayoutView)
     else:
-        assert isinstance(view.view, _View)
-        await view.view.children[0].callback(_interaction())  # type: ignore[attr-defined]
+        assert isinstance(view, _View)
+        await view.children[0].callback(_interaction())  # type: ignore[attr-defined]
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
 async def test_static_v2_model_completes_without_waiting_for_interaction(monkeypatch: pytest.MonkeyPatch) -> None:
     """A terminal V2 model sends its layout and completes the controller invocation."""
-    send = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    send = create_autospec(FlowDisplay._send, return_value=_sent())
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     model = _StaticV2Model()
 
     await asyncio.wait_for(Controller(model).invoke(_messageable()), timeout=0.1)
@@ -289,8 +289,8 @@ async def test_static_v2_model_completes_without_waiting_for_interaction(monkeyp
 @pytest.mark.asyncio
 async def test_static_v2_model_waits_for_registered_external_task(monkeypatch: pytest.MonkeyPatch) -> None:
     """A static layout still permits an external task to drive a model transition."""
-    send = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    send = create_autospec(FlowDisplay._send, return_value=_sent())
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
     interaction = _interaction()
@@ -299,7 +299,7 @@ async def test_static_v2_model_waits_for_registered_external_task(monkeypatch: p
     await asyncio.wait_for(controller.invoke(_messageable()), timeout=0.1)
 
     assert send.await_count == 2
-    assert send.await_args_list[1].args[0] is interaction
+    assert controller._display._interaction is interaction
     assert terminal_model.after_invoked
 
 
@@ -308,14 +308,13 @@ async def test_static_message_replacement_keeps_pending_external_task(monkeypatc
     """A static replacement does not cancel another task that can still transition the flow."""
     replacement_sent = asyncio.Event()
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         if send_mock.await_count == 2:
             replacement_sent.set()
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    monkeypatch.setattr(util_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
     interaction = _interaction()
@@ -339,14 +338,13 @@ async def test_static_message_replacement_keeps_newly_registered_successor(
     """A task-created successor can transition the flow after its creator renders a static message."""
     replacement_sent = asyncio.Event()
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         if send_mock.await_count == 2:
             replacement_sent.set()
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    monkeypatch.setattr(util_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     controller = Controller(_StaticV2Model())
     terminal_model = _StaticV2Model()
     interaction = _interaction()
@@ -366,8 +364,8 @@ async def test_static_message_replacement_keeps_newly_registered_successor(
 @pytest.mark.asyncio
 async def test_static_v2_model_stops_after_its_only_external_task_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A static flow completes after reporting the failure of its final result source."""
-    send = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    send = create_autospec(FlowDisplay._send, return_value=_sent())
+    monkeypatch.setattr(FlowDisplay, '_send', send)
 
     class FailingModel(_StaticV2Model):
         def __init__(self, controller: Controller) -> None:
@@ -443,12 +441,13 @@ async def test_v2_callback_update_to_static_layout_stops_view(monkeypatch: pytes
 
             return ComponentV2Message(items=(ActionRow(items=(Button(label='Finish').on(callback=replace),)),))
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         sent.set()
-        return _sent(editables[send_mock.await_count - 1])
+        index: int = send_mock.await_count - 1
+        return _sent(editables[index])
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     controller = Controller(Model())
     invocation = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(sent.wait(), timeout=0.1)
@@ -751,19 +750,16 @@ async def test_legacy_edit_of_v2_target_is_delegated_to_discord(
         def __init__(self) -> None:
             self.response = response
             self.followup = followup
-            self.message = object()
+            self.message = SimpleNamespace(id=1)
             self.original_response = AsyncMock(return_value=interaction_message)
 
     interaction = FakeInteraction()
-    edit = SimpleNamespace(edit=AsyncMock(return_value=edited_message))
-    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+    edit = SimpleNamespace(id=1, edit=AsyncMock(return_value=edited_message))
+    monkeypatch.setattr(display_module, 'Interaction', FakeInteraction)
 
-    returned = await send_helper(
-        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
-        LegacyMessage(content='Legacy state', edit_original=True),
-        None,
-        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
-    )
+    display = FlowDisplay()
+    display.start(interaction, edit)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(LegacyMessage(content='Legacy state', edit_original=True), None)
 
     followup.send.assert_not_awaited()
     response.send_message.assert_not_awaited()
@@ -791,18 +787,15 @@ async def test_interaction_edit_discord_failure_falls_back_to_active_message(
     class FakeInteraction:
         def __init__(self) -> None:
             self.response = response
-            self.message = object()
+            self.message = SimpleNamespace(id=1)
 
     interaction = FakeInteraction()
-    edit = SimpleNamespace(edit=AsyncMock(return_value=edited_message))
-    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+    edit = SimpleNamespace(id=1, edit=AsyncMock(return_value=edited_message))
+    monkeypatch.setattr(display_module, 'Interaction', FakeInteraction)
 
-    returned = await send_helper(
-        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
-        LegacyMessage(content='Updated', edit_original=True),
-        None,
-        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
-    )
+    display = FlowDisplay()
+    display.start(interaction, edit)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(LegacyMessage(content='Updated', edit_original=True), None)
 
     response.edit_message.assert_awaited_once_with(content='Updated', view=None)
     edit.edit.assert_awaited_once_with(content='Updated', view=None)
@@ -818,25 +811,23 @@ async def test_active_message_edit_discord_failure_falls_back_to_interaction_sen
     response = SimpleNamespace(
         is_done=lambda: False,
         edit_message=AsyncMock(side_effect=DiscordException('edit failed')),
+        defer=AsyncMock(side_effect=DiscordException('defer failed')),
         send_message=AsyncMock(),
     )
 
     class FakeInteraction:
         def __init__(self) -> None:
             self.response = response
-            self.message = object()
+            self.message = SimpleNamespace(id=1)
             self.original_response = AsyncMock(return_value=sent_message)
 
     interaction = FakeInteraction()
-    edit = SimpleNamespace(edit=AsyncMock(side_effect=DiscordException('edit failed')))
-    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+    edit = SimpleNamespace(id=1, edit=AsyncMock(side_effect=DiscordException('edit failed')))
+    monkeypatch.setattr(display_module, 'Interaction', FakeInteraction)
 
-    returned = await send_helper(
-        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
-        LegacyMessage(content='Updated', edit_original=True),
-        None,
-        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
-    )
+    display = FlowDisplay()
+    display.start(interaction, edit)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(LegacyMessage(content='Updated', edit_original=True), None)
 
     response.edit_message.assert_awaited_once_with(content='Updated', view=None)
     edit.edit.assert_awaited_once_with(content='Updated', view=None)
@@ -862,12 +853,9 @@ async def test_legacy_partial_message_is_edited_without_fetching() -> None:
     edit = FakePartialMessage()
     messageable = SimpleNamespace(send=AsyncMock())
 
-    returned = await send_helper(
-        messageable,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only send().
-        LegacyMessage(content='Updated', edit_original=True),
-        None,
-        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
-    )
+    display = FlowDisplay()
+    display.start(messageable, edit)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(LegacyMessage(content='Updated', edit_original=True), None)
 
     edit.fetch.assert_not_awaited()
     edit.edit.assert_awaited_once_with(content='Updated', view=None)
@@ -887,12 +875,9 @@ async def test_v2_edit_of_partial_message_does_not_fetch() -> None:
     edit = FakePartialMessage()
     messageable = SimpleNamespace(send=AsyncMock())
 
-    returned = await send_helper(
-        messageable,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only send().
-        ComponentV2Message(items=(TextDisplay('Updated'),), edit_original=True),
-        None,
-        edit,  # type: ignore[arg-type, reportArgumentType]  # Minimal fake deliberately exercises only edit().
-    )
+    display = FlowDisplay()
+    display.start(messageable, edit)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(ComponentV2Message(items=(TextDisplay('Updated'),), edit_original=True), None)
 
     edit.fetch.assert_not_awaited()
     edit.edit.assert_awaited_once()
@@ -909,7 +894,8 @@ async def test_deferred_ephemeral_v2_response_retains_interaction_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deferred ephemeral responses remain editable and deletable through their interaction webhook."""
-    response_message = SimpleNamespace(
+    response_message = MagicMock(
+        spec=DiscordMessage,
         flags=SimpleNamespace(ephemeral=True),
         delete=AsyncMock(),
     )
@@ -921,19 +907,20 @@ async def test_deferred_ephemeral_v2_response_retains_interaction_message(
     class FakeInteraction:
         def __init__(self) -> None:
             self.response = response
+            self.message = None
             self.edit_original_response = AsyncMock(return_value=response_message)
 
     interaction = FakeInteraction()
-    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
+    monkeypatch.setattr(display_module, 'Interaction', FakeInteraction)
 
-    returned = await send_helper(
-        interaction,  # type: ignore[arg-type, reportArgumentType]  # Runtime Interaction is monkeypatched to FakeInteraction.
+    display = FlowDisplay()
+    display.start(interaction, None)  # type: ignore[arg-type, reportArgumentType]  # Minimal endpoint doubles.
+    returned = await display._send(
         ComponentV2Message(
             items=(TextDisplay('Ephemeral'),),
             ephemeral=True,
             delete_after=1,
         ),
-        None,
         None,
     )
 

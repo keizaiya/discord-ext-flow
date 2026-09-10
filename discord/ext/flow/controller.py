@@ -10,27 +10,23 @@ from enum import Enum, auto
 from logging import getLogger
 from typing import TYPE_CHECKING, Any, Concatenate, NamedTuple, ParamSpec, cast
 
-from discord import ui
 from discord.utils import MaybeAwaitable, maybe_coroutine
 
+from .display import FlowDisplay
 from .external_task import ExternalResultTask, ExternalTaskLifeTime
 from .model import ComponentV2Message, Message, ModelBase
 from .result import Result, _ResultTypeEnum
-from .util import send_helper, view_can_produce_result
-from .view import _ViewType, create_view
+from .view import _ViewType, create_view, view_can_produce_result
 
 if TYPE_CHECKING:
     from asyncio import Task
     from collections.abc import Sequence
     from contextvars import Token
     from types import TracebackType
-    from typing import Self
 
-    from discord import Interaction
+    from discord import Interaction, PartialMessage
     from discord.abc import Messageable
     from discord.utils import MaybeAwaitableFunc
-
-    from .util import _Editable
 
     type Sendable = Interaction | Messageable
 
@@ -39,6 +35,7 @@ __all__ = (
     'ErrorCallback',
     'FlowTimeoutError',
     'create_external_result',
+    'run_flow',
 )
 
 
@@ -77,23 +74,11 @@ class _AutoResetControllerContext:
         controller_var.reset(self.token)
 
 
-class _ActiveMessage(NamedTuple):
-    message: ComponentV2Message | Message
-    view: _ViewType | None
-    editable: _Editable
-    messageable: Sendable
-
-
 class _ResultAction(Enum):
     CONTINUE_BATCH = auto()
     REPLACE_VIEW = auto()
     TRANSITION_MODEL = auto()
     FINISH_FLOW = auto()
-
-
-class _ResultOutcome(NamedTuple):
-    action: _ResultAction
-    transition: tuple[ModelBase, Sendable] | None = None
 
 
 class _ResultTaskRecord(NamedTuple):
@@ -141,7 +126,9 @@ def create_external_result(
 class Controller:
     """Flow controller.
 
-    This class is responsible for sending messages and waiting for interactions.
+    This class owns one flow invocation, including its delivery destination and active view.
+    Prefer :func:`run_flow` unless direct access to the controller is needed.
+    Callers must use a fresh controller for each invocation; reuse is not checked.
 
     Args:
         initial_model (ModelBase): Initial model. This model will be used first.
@@ -150,7 +137,6 @@ class Controller:
     """
 
     model: ModelBase
-    _active_message: _ActiveMessage | None
     _external_task_event: Event
     _tasks: dict[Task[Any], _TaskRecord]
 
@@ -161,21 +147,11 @@ class Controller:
         on_error: ErrorCallback | None = None,
     ) -> None:
         self.model = initial_model
-        self._active_message = None
+        self._display = FlowDisplay()
+        self._next_model: ModelBase | None = None
         self._external_task_event = Event()
         self._tasks = {}
-        self._current_model: ModelBase = initial_model
         self._error_callback = on_error
-
-    def copy(self) -> Self:
-        """Returns a copy of this controller.
-
-        Returns:
-            Controller: Copied controller.
-        """
-        copied = self.__class__(self.model)
-        copied._error_callback = self._error_callback
-        return copied
 
     def _raise_failures(self, message: str, failures: tuple[BaseException, ...]) -> None:
         if not failures:
@@ -186,7 +162,7 @@ class Controller:
             raise ExceptionGroup(message, cast('tuple[Exception, ...]', failures))
         raise BaseExceptionGroup(message, failures)
 
-    async def invoke(self, messageable: Sendable, message: _Editable | None = None) -> None:
+    async def invoke(self, messageable: Sendable, message: PartialMessage | None = None) -> None:
         """Invoke flow.
 
         Args:
@@ -198,21 +174,18 @@ class Controller:
             provided for a direct edit, the caller must acknowledge the interaction before invoking. Editing the
             explicit message target does not acknowledge the interaction response.
         """
+        self._display.start(messageable, message)
         self._external_task_event.clear()
-        self._current_model = self.model
         async with AsyncExitStack() as stack:
             stack.enter_context(self._set_to_context())
             stack.push_async_exit(self._cleanup_after_invoke)
-            model = self.model
             while True:
-                result = await self._run_model(model, messageable, message)
-                if result is None:
+                await self._run_model()
+                if self._next_model is None:
                     break
-                next_model, messageable, message = result
-                if next_model != model:
+                if self._next_model != self.model:
                     await self._cancel_model_tasks()
-                    self._current_model = next_model
-                model = next_model
+                self.model, self._next_model = self._next_model, None
 
     async def _cleanup_after_invoke(
         self,
@@ -256,7 +229,7 @@ class Controller:
             cancelled without its result being applied.
         """
         task = ExternalResultTask(coro, name=name, lifetime=life_time)
-        self._tasks[task.task] = _ResultTaskRecord(task.task, self._current_model, task, None)
+        self._tasks[task.task] = _ResultTaskRecord(task.task, self.model, task, None)
         self._external_task_event.set()
         return task
 
@@ -274,6 +247,8 @@ class Controller:
         if view.is_finished():
             return None
 
+        self._display.remember_interaction(interaction)
+
         async def invoke_callback() -> Result:
             with self._set_to_context():
                 result = await maybe_coroutine(callback, interaction, *values, **kwargs)
@@ -282,125 +257,79 @@ class Controller:
             return result
 
         task = create_task(invoke_callback(), name='flow-ui-callback')
-        self._tasks[task] = _ResultTaskRecord(task, self._current_model, None, view)
+        self._tasks[task] = _ResultTaskRecord(task, self.model, None, view)
         self._external_task_event.set()
         return task
 
-    async def _run_model(
-        self,
-        model: ModelBase,
-        messageable: Sendable,
-        edit: _Editable | None,
-    ) -> tuple[ModelBase, Sendable, _Editable] | None:
-        self._current_model = model
-        await maybe_coroutine(model.before_invoke)
-        msg = await maybe_coroutine(model.message)
-        if not isinstance(msg, (ComponentV2Message, Message)):
+    async def _run_model(self) -> None:
+        await maybe_coroutine(self.model.before_invoke)
+        message = await maybe_coroutine(self.model.message)
+        if not isinstance(message, (ComponentV2Message, Message)):
             raise TypeError('ModelBase.message must return ComponentV2Message or LegacyMessage.')
-        if not msg.items:
-            await self._send_and_activate_message(messageable, msg, None, edit)
-            await maybe_coroutine(model.after_invoke)
-            return None
+        if not message.items:
+            await self._send_and_activate_message(message, None)
+            await maybe_coroutine(self.model.after_invoke)
+            return
 
-        view_config = await maybe_coroutine(model.view_config)
-        view = create_view(config=view_config, items=msg.items, controller=self)
-        await self._send_and_activate_message(messageable, msg, view, edit)
+        view_config = await maybe_coroutine(self.model.view_config)
+        view = create_view(config=view_config, items=message.items, controller=self)
+        await self._send_and_activate_message(message, view)
 
         if any(
             isinstance(record, _ResultTaskRecord) and isinstance(record.source, ExternalResultTask)
             for record in self._tasks.values()
         ) or view_can_produce_result(view):
-            result = await self._wait_result(view)
+            await self._wait_result()
         else:
             view.stop()
-            result = None
         await self._retire_view(view)
-        await maybe_coroutine(model.after_invoke)
-        if result is None:
-            return None
-        assert self._active_message is not None
-        return (*result, self._active_message.editable)
-
-    async def _disable_items(self, active: _ActiveMessage | None) -> None:
-        if active is None or not active.message.disable_items or active.view is None:
-            return
-        for child in active.view.walk_children():
-            if isinstance(
-                child,
-                (ui.Button, ui.ChannelSelect, ui.MentionableSelect, ui.RoleSelect, ui.Select, ui.UserSelect),
-            ):
-                child.disabled = True
-        await active.editable.edit(view=active.view)
+        await maybe_coroutine(self.model.after_invoke)
 
     async def _finalize_active_message(self) -> None:
-        active, self._active_message = self._active_message, None
-        if active is None:
-            return
+        view = self._display.view
         failures: list[BaseException] = []
         try:
-            await self._disable_items(active)
+            await self._display.finish()
         except BaseException as exception:  # noqa: BLE001
             failures.append(exception)
-        if active.view is not None:
+        if view is not None:
             try:
-                await self._retire_view(active.view)
+                await self._retire_view(view)
             except BaseException as exception:  # noqa: BLE001
                 failures.append(exception)
         self._raise_failures('Errors occurred while finalizing the flow message.', tuple(failures))
 
     async def _send_and_activate_message(
         self,
-        messageable: Sendable,
         message: ComponentV2Message | Message,
         view: _ViewType | None,
-        edit: _Editable | None,
-    ) -> _Editable:
+    ) -> None:
         if view is not None:
             task = create_task(view.wait(), name='flow-view-finished')
-            self._tasks[task] = _ViewTaskRecord(task, self._current_model, view)
+            self._tasks[task] = _ViewTaskRecord(task, self.model, view)
             self._external_task_event.set()
-        previous = self._active_message
+        previous_view = self._display.view
+        failures: list[BaseException] = []
         try:
-            sent = await send_helper(messageable, message, view, edit)
-        except BaseException as send_exception:
-            if view is not None:
+            await self._display.replace(message, view)
+        except BaseException as exception:  # noqa: BLE001
+            failures.append(exception)
+            if view is not None and self._display.view is not view:
                 try:
                     await self._retire_view(view)
                 except BaseException as close_exception:  # noqa: BLE001
-                    self._raise_failures(
-                        'Errors occurred while closing a flow view after send failure.',
-                        (send_exception, close_exception),
-                    )
-            raise
-        self._active_message = _ActiveMessage(message, view, sent, messageable)
-        if previous is not None and previous.view is not view and previous.editable.id != sent.id:
-            failures: list[BaseException] = []
+                    failures.append(close_exception)
+        if previous_view is not None and previous_view is not self._display.view:
             try:
-                await self._disable_items(previous)
+                await self._retire_view(previous_view)
             except BaseException as exception:  # noqa: BLE001
                 failures.append(exception)
-            if previous.view is not None:
-                try:
-                    await self._retire_view(previous.view)
-                except BaseException as exception:  # noqa: BLE001
-                    failures.append(exception)
-            self._raise_failures('Errors occurred while replacing the previous flow message.', tuple(failures))
-        elif previous is not None and previous.view is not view and previous.view is not None:
-            await self._retire_view(previous.view)
-        return sent
+        self._raise_failures('Errors occurred while replacing the flow message.', tuple(failures))
 
-    async def _apply_result(
-        self,
-        view: _ViewType,
-        result: Result,
-    ) -> _ResultOutcome:
+    async def _apply_result(self, result: Result) -> _ResultAction:
+        assert self._display.view is not None
         interaction = result._interaction
-        if interaction is None:
-            if self._active_message is None:
-                raise ValueError('result._interaction is None.')
-            messageable = self._active_message.messageable
-        else:
-            messageable = interaction
+        self._display.begin_response(interaction)
 
         match result._type:
             case _ResultTypeEnum.MESSAGE:
@@ -408,34 +337,29 @@ class Controller:
                 replacement = None
                 if result._message.items:
                     replacement = create_view(
-                        config=view.config,
+                        config=self._display.view.config,
                         items=result._message.items,
                         controller=self,
                     )
-                await self._send_and_activate_message(
-                    messageable,
-                    result._message,
-                    replacement,
-                    None if self._active_message is None else self._active_message.editable,
-                )
-                action = _ResultAction.REPLACE_VIEW if replacement is not None else _ResultAction.FINISH_FLOW
-                return _ResultOutcome(action)
+                await self._send_and_activate_message(result._message, replacement)
+                return _ResultAction.REPLACE_VIEW if replacement is not None else _ResultAction.FINISH_FLOW
 
             case _ResultTypeEnum.MODEL:
                 assert result._model is not None
-                view.stop()
-                return _ResultOutcome(_ResultAction.TRANSITION_MODEL, (result._model, messageable))
+                self._display.view.stop()
+                self._next_model = result._model
+                return _ResultAction.TRANSITION_MODEL
 
             case _ResultTypeEnum.CONTINUE | _ResultTypeEnum.FINISH:
                 if interaction is not None and not interaction.response.is_done():
                     raise RuntimeError('Callback MUST consume interaction.')
                 if result._is_end:
-                    view.stop()
-                    return _ResultOutcome(_ResultAction.FINISH_FLOW)
-                active_view = None if self._active_message is None else self._active_message.view
-                if active_view is view and view.is_finished():
-                    return _ResultOutcome(_ResultAction.FINISH_FLOW)
-                return _ResultOutcome(_ResultAction.CONTINUE_BATCH)
+                    self._display.view.stop()
+                    return _ResultAction.FINISH_FLOW
+                if self._display.view.is_finished():
+                    return _ResultAction.FINISH_FLOW
+                self._display.complete_response()
+                return _ResultAction.CONTINUE_BATCH
 
         raise TypeError('Flow handler must return Result or None.')
 
@@ -498,15 +422,14 @@ class Controller:
 
     async def _apply_result_value(
         self,
-        view: _ViewType,
         result: Result,
-        outcome: _ResultOutcome,
-    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        outcome: _ResultAction,
+    ) -> tuple[_ResultAction, tuple[BaseException, ...]]:
         try:
-            result_outcome = await self._apply_result(view, result)
+            result_outcome = await self._apply_result(result)
         except BaseException as error:  # noqa: BLE001
-            return _ResultOutcome(_ResultAction.FINISH_FLOW), (error,)
-        if result_outcome.action is _ResultAction.CONTINUE_BATCH and outcome.action is _ResultAction.REPLACE_VIEW:
+            return _ResultAction.FINISH_FLOW, (error,)
+        if result_outcome is _ResultAction.CONTINUE_BATCH and outcome is _ResultAction.REPLACE_VIEW:
             return outcome, ()
         return result_outcome, ()
 
@@ -514,38 +437,33 @@ class Controller:
         self,
         record: _ResultTaskRecord,
         result: Result,
-        outcome: _ResultOutcome,
-    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        outcome: _ResultAction,
+    ) -> tuple[_ResultAction, tuple[BaseException, ...]]:
         if record.task not in self._tasks:
             return outcome, ()
         persistent = record.source is not None and record.source._lifetime is ExternalTaskLifeTime.PERSISTENT
-        active = self._active_message
-        target = None if active is None else record.view if record.view is not None else active.view
         if (
-            outcome.action in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW)
-            or active is None
-            or (record.view is not None and record.view is not active.view)
-            or target is None
+            outcome in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW)
+            or self._display.view is None
+            or (record.view is not None and record.view is not self._display.view)
         ):
             if not persistent or record.view is not None:
                 self._tasks.pop(record.task, None)
             return outcome, ()
         self._tasks.pop(record.task, None)
-        return await self._apply_result_value(target, result, outcome)
+        return await self._apply_result_value(result, outcome)
 
     async def _apply_handler_results(
         self,
         results: list[Result],
-        outcome: _ResultOutcome,
-    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+        outcome: _ResultAction,
+    ) -> tuple[_ResultAction, tuple[BaseException, ...]]:
         for result in results:
-            if outcome.action in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW):
+            if outcome in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW):
                 break
-            active = self._active_message
-            target = None if active is None else active.view
-            if target is None:
+            if self._display.view is None:
                 break
-            outcome, failures = await self._apply_result_value(target, result, outcome)
+            outcome, failures = await self._apply_result_value(result, outcome)
             if failures:
                 return outcome, failures
         return outcome, ()
@@ -554,8 +472,8 @@ class Controller:
         self,
         completed: list[tuple[_ResultTaskRecord, Result]],
         handler_results: list[Result],
-    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
-        outcome = _ResultOutcome(_ResultAction.CONTINUE_BATCH)
+    ) -> tuple[_ResultAction, tuple[BaseException, ...]]:
+        outcome = _ResultAction.CONTINUE_BATCH
         for record, result in completed:
             outcome, failures = await self._apply_completed_result(record, result, outcome)
             if failures:
@@ -631,7 +549,7 @@ class Controller:
         records: Sequence[_TaskRecord],
         *,
         apply: bool,
-    ) -> tuple[_ResultOutcome, tuple[BaseException, ...]]:
+    ) -> tuple[_ResultAction, tuple[BaseException, ...]]:
         completed, model_errors, controller_errors, failures = self._collect_result_records(records, apply=apply)
         timed_out_views, stopped_views = self._collect_view_records(records, model_errors, failures)
 
@@ -645,7 +563,7 @@ class Controller:
             controller_errors = []
         handler_results, handler_failures = await self._notify_errors(model_errors, controller_errors)
         failures.extend(handler_failures)
-        outcome = _ResultOutcome(_ResultAction.CONTINUE_BATCH)
+        outcome = _ResultAction.CONTINUE_BATCH
         if not apply:
             for record, _result in completed:
                 self._tasks.pop(record.task, None)
@@ -653,14 +571,18 @@ class Controller:
             outcome, result_failures = await self._apply_collected_results(completed, handler_results)
             failures.extend(result_failures)
         if failures:
-            return _ResultOutcome(_ResultAction.FINISH_FLOW), tuple(failures)
-        if apply and outcome.action is _ResultAction.CONTINUE_BATCH:
-            active = self._active_message
-            if active is not None and any(active.view is view for view in (*timed_out_views, *stopped_views)):
-                outcome = _ResultOutcome(_ResultAction.FINISH_FLOW)
+            return _ResultAction.FINISH_FLOW, tuple(failures)
+        if (
+            apply
+            and outcome is _ResultAction.CONTINUE_BATCH
+            and any(self._display.view is view for view in (*timed_out_views, *stopped_views))
+        ):
+            outcome = _ResultAction.FINISH_FLOW
         return outcome, ()
 
-    async def _wait_on_view(self, view: _ViewType) -> _ResultOutcome:
+    async def _wait_on_view(self) -> _ResultAction:
+        view = self._display.view
+        assert view is not None
         while True:
             has_external_result = any(
                 isinstance(record, _ResultTaskRecord) and isinstance(record.source, ExternalResultTask)
@@ -671,22 +593,22 @@ class Controller:
             )
             if not view_can_produce_result(view) and not has_external_result and not has_view_result:
                 view.stop()
-                return _ResultOutcome(_ResultAction.FINISH_FLOW)
+                return _ResultAction.FINISH_FLOW
             ready = [record for task, record in self._tasks.items() if task.done()]
             if ready:
                 outcome, failures = await self._process_records(ready, apply=True)
                 if failures:
                     self._raise_failures('Errors occurred while processing flow tasks.', failures)
-                if outcome.action is not _ResultAction.CONTINUE_BATCH:
+                if outcome is not _ResultAction.CONTINUE_BATCH:
                     return outcome
-                if view.is_finished() and self._active_message is not None and self._active_message.view is view:
-                    return _ResultOutcome(_ResultAction.FINISH_FLOW)
+                if view.is_finished() and self._display.view is view:
+                    return _ResultAction.FINISH_FLOW
                 continue
 
             pending = [task for task in self._tasks if not task.done()]
             if not pending:
                 view.stop()
-                return _ResultOutcome(_ResultAction.FINISH_FLOW)
+                return _ResultAction.FINISH_FLOW
             self._external_task_event.clear()
             if any(task.done() for task in self._tasks):
                 continue
@@ -701,20 +623,13 @@ class Controller:
                     added.cancel()
                     await gather(added, return_exceptions=True)
 
-    async def _wait_result(self, initial_view: _ViewType) -> tuple[ModelBase, Sendable] | None:
-        view: _ViewType | None = initial_view
-        while view is not None:
-            outcome = await self._wait_on_view(view)
-            if outcome.action is _ResultAction.TRANSITION_MODEL:
-                assert outcome.transition is not None
-                return outcome.transition
-            if outcome.action is _ResultAction.FINISH_FLOW:
-                return None
-            if outcome.action is _ResultAction.REPLACE_VIEW:
-                view = None if self._active_message is None else self._active_message.view
-                continue
-            raise RuntimeError('View wait returned without a terminal action.')
-        return None
+    async def _wait_result(self) -> None:
+        while self._display.view is not None:
+            outcome = await self._wait_on_view()
+            if outcome in (_ResultAction.TRANSITION_MODEL, _ResultAction.FINISH_FLOW):
+                return
+            if outcome is not _ResultAction.REPLACE_VIEW:
+                raise RuntimeError('View wait returned without a terminal action.')
 
     async def _retire_view(self, view: _ViewType) -> None:
         view.stop()
@@ -742,7 +657,7 @@ class Controller:
         return process_failures
 
     async def _cancel_model_tasks(self) -> None:
-        model = self._current_model
+        model = self.model
         failures: list[BaseException] = []
         while True:
             records = [
@@ -775,3 +690,21 @@ class Controller:
         """
         logger.error('Ignoring Exceptions:', exc_info=error)
         return None
+
+
+async def run_flow(
+    model: ModelBase,
+    messageable: Sendable,
+    message: PartialMessage | None = None,
+    *,
+    on_error: ErrorCallback | None = None,
+) -> None:
+    """Run a model flow using a fresh controller.
+
+    Args:
+        model: Initial model to display.
+        messageable: Messageable or interaction used to start the flow.
+        message: Existing message to edit when the initial model requests edit_original.
+        on_error: Handler for errors not handled by a model.
+    """
+    await Controller(model, on_error=on_error).invoke(messageable, message)

@@ -11,13 +11,13 @@ from discord.ext.flow import (
     ComponentV2Message,
     ComponentV2Paginator,
     Container,
-    Controller,
     InteractiveButton,
     ModelBase,
     PaginatorControls,
     Result,
     TextDisplay,
     paginator,
+    run_flow,
 )
 
 
@@ -85,7 +85,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='component-v2-pagination')
 async def component_v2_pagination(interaction: Interaction) -> None:
-    await Controller(Pagination(randint(1, 100))).invoke(interaction)
+    await run_flow(Pagination(randint(1, 100)), interaction)
 
 
 client.run(os.environ['DISCORD_TOKEN'])

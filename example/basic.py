@@ -4,7 +4,7 @@ import os
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Result
+from discord.ext.flow import Button, InteractiveButton, Message, ModelBase, Result, run_flow
 
 
 class StartModel(ModelBase):
@@ -123,7 +123,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='basic')
 async def basic(interaction: Interaction) -> None:
-    await Controller(StartModel()).invoke(interaction)
+    await run_flow(StartModel(), interaction)
 
 
 client.run(os.environ['DISCORD_TOKEN'])

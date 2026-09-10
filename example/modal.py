@@ -10,7 +10,6 @@ from discord.ext.flow import (
     Checkbox,
     CheckboxGroup,
     CheckboxGroupOption,
-    Controller,
     FileUpload,
     InteractiveButton,
     Label,
@@ -27,6 +26,7 @@ from discord.ext.flow import (
     TextDisplay,
     TextInput,
     UserSelect,
+    run_flow,
     send_modal,
 )
 
@@ -308,7 +308,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='embed')
 async def embed(interaction: Interaction, title: str) -> None:
-    await Controller(EmbedModel(title)).invoke(interaction)
+    await run_flow(EmbedModel(title), interaction)
 
 
 client.run(os.environ['DISCORD_TOKEN'])

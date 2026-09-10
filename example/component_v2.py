@@ -9,12 +9,12 @@ from discord.ext.flow import (
     Button,
     ComponentV2Message,
     Container,
-    Controller,
     LegacyMessage,
     ModelBase,
     Result,
     TextDisplay,
     create_message,
+    run_flow,
 )
 
 bot = commands.Bot(command_prefix='!', intents=discord.Intents.default())
@@ -40,7 +40,7 @@ class ComponentV2Flow(ModelBase):
 
 @bot.command()
 async def component_v2(ctx: commands.Context[commands.Bot]) -> None:
-    await Controller(ComponentV2Flow()).invoke(ctx)
+    await run_flow(ComponentV2Flow(), ctx)
 
 
 bot.run(os.environ['DISCORD_TOKEN'])

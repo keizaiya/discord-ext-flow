@@ -583,3 +583,24 @@ if TYPE_CHECKING:
     type V2ItemType = ActionRow | Section | TextDisplay | MediaGallery | File | Separator | Container
     type CreateItemType = LegacyItemType | V2ItemType
     type ItemType = CreateItemType
+
+
+def _item_can_produce_result(item: ItemType) -> bool:
+    match item:
+        case InteractiveItem(
+            item=(
+                Button() | Select() | UserSelect() | RoleSelect() | MentionableSelect() | ChannelSelect()
+            ) as component
+        ):
+            return not component.disabled
+        case ActionRow(items=items) | Container(items=items):
+            return items_can_produce_result(items)
+        case Section(accessory=InteractiveItem(item=Button() as button)):
+            return not button.disabled
+        case _:
+            return False
+
+
+def items_can_produce_result(items: Sequence[ItemType]) -> bool:
+    """Return whether configured items contain an enabled flow callback."""
+    return any(_item_can_produce_result(item) for item in items)

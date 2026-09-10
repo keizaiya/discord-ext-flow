@@ -348,3 +348,8 @@ def create_view(
     if is_sequence_v2_item(items):
         return _LayoutView(config=config, items=items, controller=controller)
     return _View(config=config, items=items, controller=controller)
+
+
+def view_can_produce_result(view: _ViewType) -> bool:
+    """Return whether a view contains an enabled item that can dispatch a flow callback."""
+    return any(item.is_dispatchable() and not getattr(item, 'disabled', False) for item in view.walk_children())

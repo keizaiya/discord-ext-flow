@@ -4,12 +4,11 @@ import asyncio
 from itertools import count
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
-import discord.ext.flow.controller as controller_module
-import discord.ext.flow.util as util_module
+import discord.ext.flow.display as display_module
 import pytest
-from discord import Client, Interaction, ui
+from discord import Client, Interaction, InteractionType, PartialMessage, ui
 from discord.abc import Messageable
 from discord.ext.flow import (
     ActionRow,
@@ -29,8 +28,8 @@ from discord.ext.flow.controller import (
     Controller,
     _ResultAction,
 )
+from discord.ext.flow.display import FlowDisplay
 from discord.ext.flow.modal import _InnerModal
-from discord.ext.flow.util import _Editable, force_cancel_tasks
 from discord.ext.flow.view import create_view
 
 if TYPE_CHECKING:
@@ -52,22 +51,22 @@ def _messageable() -> Messageable:
 _message_ids = count(1)
 
 
-def _editable(*, message_id: int | None = None) -> _Editable:
+def _editable(*, message_id: int | None = None) -> PartialMessage:
     """Create a typed editable-message double when it is not exercised by the test."""
-    editable = MagicMock(spec=_Editable)
+    editable = MagicMock(spec=PartialMessage)
     editable.id = next(_message_ids) if message_id is None else message_id
     return editable
 
 
-def _sent(message: _Editable | None = None) -> _Editable:
+def _sent(message: PartialMessage | None = None) -> PartialMessage:
     return _editable() if message is None else message
 
 
-def _tracked_editable(name: str, events: list[str]) -> tuple[_Editable, AsyncMock]:
+def _tracked_editable(name: str, events: list[str]) -> tuple[PartialMessage, AsyncMock]:
     target = _editable()
     edit_mock = cast('AsyncMock', target.edit)
 
-    async def edit(**_: object) -> _Editable:
+    async def edit(**_: object) -> PartialMessage:
         events.append(f'disable-{name}')
         return target
 
@@ -121,7 +120,7 @@ async def test_disabled_only_layout_completes_without_waiting(
         def after_invoke(self) -> None:
             self.after_invoked = True
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=_sent()))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, return_value=_sent()))
     model = Model()
 
     await asyncio.wait_for(Controller(model).invoke(_messageable()), timeout=0.1)
@@ -135,12 +134,13 @@ async def test_disabled_only_replacement_stops_active_view(monkeypatch: pytest.M
     sent = asyncio.Event()
     editables = (_editable(), _editable())
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         sent.set()
-        return _sent(editables[send_mock.await_count - 1])
+        index: int = send_mock.await_count - 1
+        return _sent(editables[index])
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     replacement_message = LegacyMessage(items=(Button(disabled=True).on(callback=_finish),))
 
     class Model(ModelBase):
@@ -192,14 +192,14 @@ async def test_new_message_replacement_finalizes_each_message_with_its_own_flag(
     editables = (initial_edit, replacement_edit)
     sent_events = (initial_sent, replacement_sent)
 
-    async def send(*_: object) -> _Editable:
-        index = send_mock.await_count - 1
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
+        index: int = send_mock.await_count - 1
         events.append(f'send-{index}')
         sent_events[index].set()
         return _sent(editables[index])
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
 
     class Model(ModelBase):
         def message(self) -> ComponentV2Message:
@@ -262,13 +262,15 @@ async def test_edit_original_replacement_overwrites_without_disabling_previous_v
     editables = (initial_edit, replacement_edit)
     sent_events = (initial_sent, replacement_sent)
 
-    async def send(*_: object) -> _Editable:
-        index = send_mock.await_count - 1
+    async def send(display: FlowDisplay, *_: object, **_kwargs: object) -> PartialMessage:
+        index: int = send_mock.await_count - 1
+        if index == 1:
+            assert display.message is initial_edit
         sent_events[index].set()
         return _sent(editables[index])
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
 
     class Model(ModelBase):
         def replace(self, _: Interaction) -> Result:
@@ -292,26 +294,26 @@ async def test_edit_original_replacement_overwrites_without_disabling_previous_v
     await asyncio.wait_for(replacement_sent.wait(), timeout=0.1)
 
     initial_edit_mock.assert_not_awaited()
-    assert send_mock.await_args_list[1].args[3] is initial_edit
     replacement_view = send_mock.await_args_list[1].args[2]
     await _first_button(replacement_view).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
-async def test_interaction_edit_of_different_message_finalizes_active_message(
+async def test_explicit_edit_target_precedes_different_interaction_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An interaction response editing message B finalizes the distinct active message A."""
+    """An explicit active target is edited even when the supplied interaction references another message."""
     events: list[str] = []
     initial_message, initial_edit_mock = _tracked_editable('initial', events)
     interaction_message = _editable()
     assert initial_message.id != interaction_message.id
-    response = SimpleNamespace(is_done=lambda: False, edit_message=AsyncMock())
+    response = SimpleNamespace(is_done=lambda: True, edit_message=AsyncMock())
 
     class FakeInteraction:
         def __init__(self) -> None:
             self.response = response
+            self.type = InteractionType.component
             self.message = interaction_message
             self.original_response = AsyncMock(return_value=interaction_message)
 
@@ -322,11 +324,13 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
     )
     view_config: ViewConfig = {'timeout': 42.0}
     initial_view = create_view(view_config, initial_config.items or (), controller)
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=initial_message))
-    await controller._send_and_activate_message(_messageable(), initial_config, initial_view, None)
+    original_send = FlowDisplay._send
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(original_send, return_value=initial_message))
+    controller._display.start(_messageable())
+    await controller._send_and_activate_message(initial_config, initial_view)
 
-    monkeypatch.setattr(util_module, 'Interaction', FakeInteraction)
-    monkeypatch.setattr(controller_module, 'send_helper', util_module.send_helper)
+    monkeypatch.setattr(display_module, 'Interaction', FakeInteraction)
+    monkeypatch.setattr(FlowDisplay, '_send', original_send)
     interaction = cast('Interaction[Client]', FakeInteraction())
     replacement = LegacyMessage(
         items=(Button(label='Replacement').on(callback=_finish),),
@@ -334,20 +338,19 @@ async def test_interaction_edit_of_different_message_finalizes_active_message(
     )
 
     outcome = await controller._apply_result(
-        initial_view,
         Result.send_message(replacement, interaction=interaction),
     )
 
-    assert outcome.action is _ResultAction.REPLACE_VIEW
-    response.edit_message.assert_awaited_once()
+    assert outcome is _ResultAction.REPLACE_VIEW
+    response.edit_message.assert_not_awaited()
     assert events == ['disable-initial']
-    assert _first_button(initial_view).disabled
-    initial_edit_mock.assert_awaited_once_with(view=initial_view)
+    assert not _first_button(initial_view).disabled
+    initial_edit_mock.assert_awaited_once_with(view=controller._display.view)
     assert initial_view.is_finished()
-    assert controller._active_message is not None
-    assert controller._active_message.editable is interaction_message
-    assert controller._active_message.view is not None
-    assert controller._active_message.view.config is view_config
+    assert controller._display.message is not None
+    assert controller._display.message is initial_message
+    assert controller._display.view is not None
+    assert controller._display.view.config is view_config
 
     await controller._finalize_active_message()
 
@@ -363,16 +366,16 @@ async def test_failed_replacement_send_finalizes_previous_message_in_invoke_clea
     events: list[str] = []
     initial_edit, initial_edit_mock = _tracked_editable('initial', events)
 
-    async def send(*_: object) -> _Editable:
-        index = send_mock.await_count - 1
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
+        index: int = send_mock.await_count - 1
         events.append(f'send-{index}')
         if index == 0:
             initial_sent.set()
             return _sent(initial_edit)
         raise RuntimeError('replacement failed')
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
 
     class InitialModel(ModelBase):
         def callback(self, _: Interaction) -> Result:
@@ -423,24 +426,23 @@ async def test_invoke_groups_flow_and_cleanup_failures(monkeypatch: pytest.Monke
         def after_invoke(self) -> None:
             raise flow_failure
 
-    async def send(_: object, __: object, ___: _ViewType, ____: object) -> _Editable:
+    async def send(_: object, __: object, ___: _ViewType, **_kwargs: object) -> PartialMessage:
         sent.set()
         return initial_edit
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     controller = Controller(FailingModel())
     invocation = asyncio.create_task(controller.invoke(_messageable()))
     await asyncio.wait_for(sent.wait(), timeout=0.1)
-    view = controller._active_message
+    view = controller._display.view
     assert view is not None
-    assert view.view is not None
-    await _first_button(view.view).callback(_interaction())
+    await _first_button(view).callback(_interaction())
 
     with pytest.raises(ExceptionGroup) as raised:
         await asyncio.wait_for(invocation, timeout=0.1)
 
     assert raised.value.exceptions == (flow_failure, cleanup_failure)
-    initial_edit_mock.assert_awaited_once_with(view=view.view)
+    initial_edit_mock.assert_awaited_once_with(view=view)
 
 
 @pytest.mark.asyncio
@@ -457,13 +459,13 @@ async def test_invoke_preserves_cleanup_failure_without_flow_failure(monkeypatch
         def message(self) -> LegacyMessage:
             return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
 
-    async def send(_: object, __: object, view: _ViewType, ____: object) -> _Editable:
+    async def send(_: object, __: object, view: _ViewType, **_kwargs: object) -> PartialMessage:
         nonlocal captured_view
         captured_view = view
         sent.set()
         return initial_edit
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     invocation = asyncio.create_task(Controller(Model()).invoke(_messageable()))
     await asyncio.wait_for(sent.wait(), timeout=0.1)
     assert captured_view is not None
@@ -490,13 +492,13 @@ async def test_invoke_groups_cancellation_and_cleanup_failures(monkeypatch: pyte
         def message(self) -> LegacyMessage:
             return LegacyMessage(items=(Button(label='Initial').on(callback=_finish),), disable_items=True)
 
-    async def send(_: object, __: object, view: _ViewType, ____: object) -> _Editable:
+    async def send(_: object, __: object, view: _ViewType, **_kwargs: object) -> PartialMessage:
         nonlocal captured_view
         captured_view = view
         sent.set()
         return initial_edit
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     invocation = asyncio.create_task(Controller(Model()).invoke(_messageable()))
     await asyncio.wait_for(sent.wait(), timeout=0.1)
     invocation.cancel()
@@ -509,43 +511,6 @@ async def test_invoke_groups_cancellation_and_cleanup_failures(monkeypatch: pyte
     assert isinstance(raised.value.exceptions[0], asyncio.CancelledError)
     assert raised.value.exceptions[1] is cleanup_failure
     initial_edit_mock.assert_awaited_once_with(view=captured_view)
-
-
-@pytest.mark.asyncio
-async def test_reused_controller_clears_stale_external_task_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A terminal invocation cannot leave a completed task-added waiter for the next invocation."""
-    send = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send)
-
-    class TerminalModel(ModelBase):
-        def __init__(self, controller: Controller) -> None:
-            self.controller = controller
-
-        def before_invoke(self) -> None:
-            async def pending() -> Result:
-                await asyncio.Event().wait()
-                return Result.finish_flow()
-
-            self.controller.create_external_result(pending)
-
-        def message(self) -> LegacyMessage:
-            return LegacyMessage()
-
-    controller = Controller(_InteractiveModel())
-    controller.model = TerminalModel(controller)
-    await controller.invoke(_messageable())
-    assert controller._external_task_event.is_set()
-
-    controller.model = _InteractiveModel()
-    invocation = asyncio.create_task(controller.invoke(_messageable()))
-    for _ in range(3):
-        await asyncio.sleep(0)
-
-    assert not invocation.done()
-    assert not controller._external_task_event.is_set()
-    view = send.await_args_list[-1].args[2]
-    await _first_button(view).callback(_interaction())
-    await asyncio.wait_for(invocation, timeout=0.1)
 
 
 @pytest.mark.asyncio
@@ -577,8 +542,8 @@ async def test_unprocessed_persistent_results_continue_into_next_models(monkeypa
             await asyncio.gather(*(task.task for task in self.tasks))
             return ComponentV2Message(items=(TextDisplay('Initial'),))
 
-    send = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    send = create_autospec(FlowDisplay._send, return_value=_sent())
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     controller = Controller(_StaticModel())
     controller.model = InitialModel(controller)
 
@@ -615,15 +580,17 @@ async def test_external_message_without_interaction_finishes_without_items(
             self.controller.create_external_result(replace_message)
             self.pending_task = self.controller.create_external_result(wait_forever)
 
-    async def send(messageable: object, message: LegacyMessage, view: _ViewType | None, _: object) -> _Editable:
-        assert messageable is source
+    async def send(
+        display: FlowDisplay, message: LegacyMessage, view: _ViewType | None, **_kwargs: object
+    ) -> PartialMessage:
+        assert display._channel is source
         if message is replacement:
             assert view is None
         initial_sent.set()
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     model = Model(Controller(_StaticModel()))
     controller = model.controller
     controller.model = model
@@ -668,18 +635,18 @@ async def test_empty_model_message_finishes_and_cancels_pending_external_result(
     model.controller = controller
 
     async def send(
-        messageable: object,
+        display: FlowDisplay,
         sent_message: ComponentV2Message | LegacyMessage,
         view: _ViewType | None,
-        _: object,
-    ) -> _Editable:
-        assert messageable is source
+        **_kwargs: object,
+    ) -> PartialMessage:
+        assert display._channel is source
         assert sent_message is model_message
         assert view is None
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
 
     await asyncio.wait_for(controller.invoke(source), timeout=0.1)
 
@@ -706,15 +673,15 @@ async def test_external_next_model_without_interaction_uses_active_messageable(
 
             self.controller.create_external_result(transition)
 
-    send_mock = AsyncMock(return_value=_sent())
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, return_value=_sent())
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     model = Model(Controller(_StaticModel()))
     model.controller.model = model
 
     await asyncio.wait_for(model.controller.invoke(source), timeout=0.1)
 
     assert send_mock.await_count == 2
-    assert all(call.args[0] is source for call in send_mock.await_args_list)
+    assert all(call.args[0]._channel is source for call in send_mock.await_args_list)
     assert next_model.after_invoked
 
 
@@ -741,13 +708,13 @@ async def test_external_continue_without_interaction_keeps_view_waiting(
 
             self.controller.create_external_result(continue_flow)
 
-    async def send(_: object, __: LegacyMessage, view: _ViewType, ___: object) -> _Editable:
+    async def send(_: object, __: LegacyMessage, view: _ViewType, **_kwargs: object) -> PartialMessage:
         nonlocal captured_view
         captured_view = view
         initial_sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, side_effect=send))
     model = Model(Controller(_StaticModel()))
     model.controller.model = model
     invocation = asyncio.create_task(model.controller.invoke(source))
@@ -778,12 +745,12 @@ async def test_external_finish_without_interaction_ends_flow(monkeypatch: pytest
 
             self.controller.create_external_result(finish)
 
-    async def send(messageable: object, _: LegacyMessage, __: _ViewType, ___: object) -> _Editable:
-        assert messageable is source
+    async def send(display: FlowDisplay, _: LegacyMessage, __: _ViewType, **_kwargs: object) -> PartialMessage:
+        assert display._channel is source
         initial_sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, side_effect=send))
     model = Model(Controller(_StaticModel()))
     model.controller.model = model
 
@@ -840,7 +807,7 @@ async def test_view_model_result_precedes_simultaneous_external_message(monkeypa
 
     sent_messages: list[LegacyMessage] = []
 
-    async def send(_: object, message: LegacyMessage, view: _ViewType, __: object) -> _Editable:
+    async def send(_: object, message: LegacyMessage, view: _ViewType, **_kwargs: object) -> PartialMessage:
         sent_messages.append(message)
         if message is initial_message:
             await _first_button(view).callback(interaction)
@@ -851,7 +818,7 @@ async def test_view_model_result_precedes_simultaneous_external_message(monkeypa
             await ui_completed.wait()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, side_effect=send))
     controller = Controller(_StaticModel())
     controller.model = InitialModel(controller)
     invocation = asyncio.create_task(controller.invoke(_messageable()))
@@ -904,7 +871,7 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
 
     sent_views: list[_ViewType] = []
 
-    async def send(_: object, message: LegacyMessage, view: _ViewType, __: object) -> _Editable:
+    async def send(_: object, message: LegacyMessage, view: _ViewType, **_kwargs: object) -> PartialMessage:
         sent_views.append(view)
         if message is initial_message:
             await _first_button(view).callback(interaction)
@@ -917,7 +884,7 @@ async def test_view_continue_precedes_simultaneous_external_replacement(
             replacement_sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(side_effect=send))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, side_effect=send))
     controller = Controller(_StaticModel())
     controller.model = InitialModel(controller)
     invocation = asyncio.create_task(controller.invoke(_messageable()))
@@ -945,7 +912,7 @@ async def test_completed_external_results_continue_after_view_replacement(
     second = LegacyMessage(items=(Button(label='Second').on(callback=_finish),))
     send_messages: list[LegacyMessage] = []
 
-    async def send(_: object, message: LegacyMessage, __: _ViewType | None, ___: object) -> _Editable:
+    async def send(_: object, message: LegacyMessage, __: _ViewType | None, **_kwargs: object) -> PartialMessage:
         send_messages.append(message)
         if len(send_messages) == 1:
             initial_sent.set()
@@ -972,7 +939,7 @@ async def test_completed_external_results_continue_after_view_replacement(
         def message(self) -> LegacyMessage:
             return initial
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     model = Model()
     controller = Controller(model)
     model.controller = controller
@@ -982,10 +949,9 @@ async def test_completed_external_results_continue_after_view_replacement(
 
     assert send_messages == [initial, first, second]
     assert not invocation.done()
-    active = controller._active_message
+    active = controller._display.view
     assert active is not None
-    assert active.view is not None
-    await _first_button(active.view).callback(interaction)
+    await _first_button(active).callback(interaction)
     await asyncio.wait_for(invocation, timeout=0.1)
 
 
@@ -1008,7 +974,7 @@ async def test_modal_timeout_releases_its_external_result(monkeypatch: pytest.Mo
             # d.py exposes timeout delivery only through this private, untyped dispatcher.
             asyncio.get_running_loop().call_soon(self.modal._dispatch_timeout)  # type: ignore[no-untyped-call]
 
-    monkeypatch.setattr(controller_module, 'send_helper', AsyncMock(return_value=_sent()))
+    monkeypatch.setattr(FlowDisplay, '_send', create_autospec(FlowDisplay._send, return_value=_sent()))
     received: list[ExceptionGroup[Exception]] = []
     controller = Controller(_StaticModel(), on_error=received.append)
     model = ModalModel(controller)
@@ -1059,10 +1025,10 @@ async def test_modal_submit_failure_reaches_controller_once_without_discord_log(
             assert isinstance(self.modal, _InnerModal)
             sent.set()
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     model = ModalModel()
     controller = Controller(model, on_error=received.append)
     model.controller = controller
@@ -1099,13 +1065,13 @@ async def test_cancelled_external_result_does_not_preempt_view_result(monkeypatc
 
             self.task = self.controller.create_external_result(wait_forever, name='modal-wait')
 
-    async def send(_: object, __: object, view: _ViewType, ___: object) -> _Editable:
+    async def send(_: object, __: object, view: _ViewType, **_kwargs: object) -> PartialMessage:
         nonlocal captured_view
         captured_view = view
         sent.set()
         return _sent()
 
-    monkeypatch.setattr(controller_module, 'send_helper', send)
+    monkeypatch.setattr(FlowDisplay, '_send', send)
     controller = Controller(_InteractiveModel())
     model = Model(controller)
     controller.model = model
@@ -1153,17 +1119,16 @@ async def test_empty_external_result_finishes_and_cancels_pending_task(
         _: object,
         sent_message: ComponentV2Message | LegacyMessage,
         view: _ViewType | None,
-        ___: object,
-    ) -> _Editable:
+        **_kwargs: object,
+    ) -> PartialMessage:
         if send_mock.await_count == 2:
             assert sent_message is replacement
             assert view is None
             replacement_sent.set()
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    monkeypatch.setattr(util_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     controller = Controller(_InteractiveModel())
     model = Model(controller)
     controller.model = model
@@ -1174,37 +1139,6 @@ async def test_empty_external_result_finishes_and_cancels_pending_task(
 
     assert model.pending_task.task.cancelled()
     assert send_mock.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_force_cancel_tasks_waits_for_generator_tasks_to_finish() -> None:
-    """Cancellation waits for cleanup even when the caller supplies a generator."""
-    started = asyncio.Event()
-    cleanup_started = asyncio.Event()
-    release_cleanup = asyncio.Event()
-    cleanup_finished = asyncio.Event()
-
-    async def worker() -> None:
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cleanup_started.set()
-            await release_cleanup.wait()
-            cleanup_finished.set()
-
-    task = asyncio.create_task(worker())
-    await started.wait()
-    cancellation = asyncio.create_task(force_cancel_tasks(candidate for candidate in (task,)))
-    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
-
-    assert not cancellation.done()
-    assert not cleanup_finished.is_set()
-    release_cleanup.set()
-    await asyncio.wait_for(cancellation, timeout=0.1)
-
-    assert cleanup_finished.is_set()
-    assert task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -1233,14 +1167,13 @@ async def test_external_task_name_cannot_collide_with_view_waiter(monkeypatch: p
             self.controller.create_external_result(replace_message, name='replacement')
             self.controller.create_external_result(transition, name='inner-view-wait')
 
-    async def send(*_: object) -> _Editable:
+    async def send(*_: object, **_kwargs: object) -> PartialMessage:
         if send_mock.await_count == 2:
             replacement_sent.set()
         return _sent()
 
-    send_mock = AsyncMock(side_effect=send)
-    monkeypatch.setattr(controller_module, 'send_helper', send_mock)
-    monkeypatch.setattr(util_module, 'send_helper', send_mock)
+    send_mock = create_autospec(FlowDisplay._send, side_effect=send)
+    monkeypatch.setattr(FlowDisplay, '_send', send_mock)
     controller = Controller(_StaticModel())
     terminal_model = _StaticModel()
     controller.model = CollisionModel(controller, terminal_model)

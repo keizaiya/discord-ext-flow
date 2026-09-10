@@ -5,7 +5,7 @@ from random import randint
 
 from discord import Client, Embed, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Paginator, Result, paginator
+from discord.ext.flow import Button, InteractiveButton, Message, ModelBase, Paginator, Result, paginator, run_flow
 
 
 class Pagination(ModelBase):
@@ -55,7 +55,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='pagination')
 async def pagination(interaction: Interaction) -> None:
-    await Controller(Pagination(randint(1, 100))).invoke(interaction)
+    await run_flow(Pagination(randint(1, 100)), interaction)
 
 
 client.run(os.environ['DISCORD_TOKEN'])

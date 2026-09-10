@@ -4,7 +4,7 @@ import os
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, InteractiveButton, Message, ModelBase, Result
+from discord.ext.flow import Button, InteractiveButton, Message, ModelBase, Result, run_flow
 
 TREE_STRING = """
 tree of this example
@@ -76,7 +76,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='tree')
 async def tree(interaction: Interaction) -> None:
-    await Controller(Model('A')).invoke(interaction)
+    await run_flow(Model('A'), interaction)
 
 
 client.run(os.environ['DISCORD_TOKEN'])
