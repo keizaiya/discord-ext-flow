@@ -35,7 +35,7 @@ jobs:
         id: pyright
         continue-on-error: true
         run: |
-          uv run pyright .
+          uv run pyright
 
       - name: mypy
         id: mypy
@@ -55,6 +55,12 @@ jobs:
         run: |
           uv run ruff format --check --diff .
 
+      - name: pytest
+        id: pytest
+        continue-on-error: true
+        run: |
+          uv run pytest
+
       - name: Check failure
         env:
           text: "\
@@ -62,6 +68,7 @@ jobs:
             ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'      || '' }}\
             ${{ steps.pyright.outcome == 'failure'            && 'pyright,'         || '' }}\
             ${{ steps.mypy.outcome == 'failure'               && 'mypy,'            || '' }}\
+            ${{ steps.pytest.outcome == 'failure'             && 'pytest,'           || '' }}\
             "
         run: |
           if [ -n "${text}" ]; then
