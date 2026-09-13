@@ -1,31 +1,71 @@
 from __future__ import annotations
 
-from asyncio import CancelledError, get_running_loop
-from contextlib import suppress
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from discord import ui
-from discord.utils import MISSING, maybe_coroutine
+from discord.utils import MISSING
 
-from .model import Button, ChannelSelect, Link, MentionableSelect, RoleSelect, Select, UserSelect
+from .item import (
+    ActionRow,
+    Button,
+    ChannelSelect,
+    Container,
+    File,
+    InteractiveItem,
+    Link,
+    MediaGallery,
+    MentionableSelect,
+    PremiumButton,
+    RoleSelect,
+    Section,
+    Select,
+    Separator,
+    TextDisplay,
+    Thumbnail,
+    UserSelect,
+    is_sequence_v2_item,
+)
 from .util import map_or, unwrap_or
 
 if TYPE_CHECKING:
-    from asyncio import Future
+    import sys
     from collections.abc import Sequence
 
     from discord import Interaction
 
     from .controller import Controller
-    from .model import ItemType, ViewConfig
-    from .result import Result
+    from .item import (
+        ButtonCallback,
+        ChannelSelectCallback,
+        InteractiveButton,
+        InteractiveChannelSelect,
+        InteractiveMentionableSelect,
+        InteractiveRoleSelect,
+        InteractiveSelect,
+        InteractiveUserSelect,
+        LegacyItemType,
+        MentionableSelectCallback,
+        RoleSelectCallback,
+        SelectCallback,
+        UserSelectCallback,
+        V2ItemType,
+    )
+    from .model import ViewConfig
+
+    if sys.version_info < (3, 13):
+        from typing_extensions import TypeIs
+    else:
+        from typing import TypeIs
+
+V = TypeVar('V', '_View', '_LayoutView')
 
 
-class _Button(ui.Button['_View']):
-    view: _View
+class _Button(ui.Button[V]):
+    view: V
+    flow_callback: ButtonCallback
 
-    def __init__(self, config: Button) -> None:
+    def __init__(self, binding: InteractiveButton) -> None:
+        config = binding.item
         super().__init__(
             label=config.label,
             custom_id=config.custom_id,
@@ -33,170 +73,289 @@ class _Button(ui.Button['_View']):
             style=config.style,
             emoji=config.emoji,
             row=config.row,
+            id=config.id,
         )
-        self.config = config
+        self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(await maybe_coroutine(self.config.callback, interaction), interaction)
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction)
 
 
-class _Link(ui.Button['_View']):
+class _Link(ui.Button[V]):
     def __init__(self, config: Link) -> None:
-        super().__init__(label=config.label, disabled=config.disabled, emoji=config.emoji, row=config.row)
+        super().__init__(
+            url=config.url,
+            label=config.label,
+            disabled=config.disabled,
+            emoji=config.emoji,
+            row=config.row,
+            id=config.id,
+        )
 
 
-class _Select(ui.Select['_View']):
-    view: _View
+class _PremiumButton(ui.Button[V]):
+    def __init__(self, config: PremiumButton) -> None:
+        super().__init__(sku_id=config.sku_id, disabled=config.disabled, row=config.row, id=config.id)
 
-    def __init__(self, config: Select) -> None:
+
+class _Select(ui.Select[V]):
+    view: V
+    flow_callback: SelectCallback
+
+    def __init__(self, binding: InteractiveSelect) -> None:
+        config = binding.item
         super().__init__(
             custom_id=unwrap_or(config.custom_id, MISSING),
             placeholder=config.placeholder,
             min_values=config.min_values,
             max_values=config.max_values,
-            options=map_or(config.options, MISSING, list),
+            options=list(config.options),
             disabled=config.disabled,
+            required=config.required,
             row=config.row,
+            id=config.id,
         )
-        self.config = config
+        self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(
-                await maybe_coroutine(self.config.callback, interaction, self.values), interaction
-            )
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
-class _UserSelect(ui.UserSelect['_View']):
-    view: _View
+class _UserSelect(ui.UserSelect[V]):
+    view: V
+    flow_callback: UserSelectCallback
 
-    def __init__(self, config: UserSelect) -> None:
+    def __init__(self, binding: InteractiveUserSelect) -> None:
+        config = binding.item
         super().__init__(
             custom_id=unwrap_or(config.custom_id, MISSING),
             placeholder=config.placeholder,
             min_values=config.min_values,
             max_values=config.max_values,
             disabled=config.disabled,
-            row=config.row,
-            default_values=unwrap_or(config.default_values, MISSING),
-        )
-        self.config = config
-
-    async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(
-                await maybe_coroutine(self.config.callback, interaction, self.values), interaction
-            )
-
-
-class _RoleSelect(ui.RoleSelect['_View']):
-    view: _View
-
-    def __init__(self, config: RoleSelect) -> None:
-        super().__init__(
-            custom_id=unwrap_or(config.custom_id, MISSING),
-            placeholder=config.placeholder,
-            min_values=config.min_values,
-            max_values=config.max_values,
-            disabled=config.disabled,
+            required=config.required,
             row=config.row,
             default_values=unwrap_or(config.default_values, MISSING),
+            id=config.id,
         )
-        self.config = config
+        self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(
-                await maybe_coroutine(self.config.callback, interaction, self.values), interaction
-            )
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
-class _MentionableSelect(ui.MentionableSelect['_View']):
-    view: _View
+class _RoleSelect(ui.RoleSelect[V]):
+    view: V
+    flow_callback: RoleSelectCallback
 
-    def __init__(self, config: MentionableSelect) -> None:
+    def __init__(self, binding: InteractiveRoleSelect) -> None:
+        config = binding.item
         super().__init__(
             custom_id=unwrap_or(config.custom_id, MISSING),
             placeholder=config.placeholder,
             min_values=config.min_values,
             max_values=config.max_values,
             disabled=config.disabled,
+            required=config.required,
             row=config.row,
             default_values=unwrap_or(config.default_values, MISSING),
+            id=config.id,
         )
-        self.config = config
+        self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(
-                await maybe_coroutine(self.config.callback, interaction, self.values), interaction
-            )
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
 
 
-class _ChannelSelect(ui.ChannelSelect['_View']):
-    view: _View
+class _MentionableSelect(ui.MentionableSelect[V]):
+    view: V
+    flow_callback: MentionableSelectCallback
 
-    def __init__(self, config: ChannelSelect) -> None:
+    def __init__(self, binding: InteractiveMentionableSelect) -> None:
+        config = binding.item
         super().__init__(
             custom_id=unwrap_or(config.custom_id, MISSING),
             placeholder=config.placeholder,
             min_values=config.min_values,
             max_values=config.max_values,
             disabled=config.disabled,
+            required=config.required,
             row=config.row,
             default_values=unwrap_or(config.default_values, MISSING),
+            id=config.id,
         )
-        self.config = config
+        self.flow_callback = binding.callback
 
     async def callback(self, interaction: Interaction) -> None:
-        with self.view.controller._set_to_context(), suppress(CancelledError):
-            await self.view._set_result(
-                await maybe_coroutine(self.config.callback, interaction, self.values), interaction
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
+
+
+class _ChannelSelect(ui.ChannelSelect[V]):
+    view: V
+    flow_callback: ChannelSelectCallback
+
+    def __init__(self, binding: InteractiveChannelSelect) -> None:
+        config = binding.item
+        super().__init__(
+            custom_id=unwrap_or(config.custom_id, MISSING),
+            placeholder=config.placeholder,
+            min_values=config.min_values,
+            max_values=config.max_values,
+            disabled=config.disabled,
+            required=config.required,
+            row=config.row,
+            channel_types=map_or(config.channel_types, MISSING, list),
+            default_values=unwrap_or(config.default_values, MISSING),
+            id=config.id,
+        )
+        self.flow_callback = binding.callback
+
+    async def callback(self, interaction: Interaction) -> None:
+        self.view.controller._create_ui_task(self.view, self.flow_callback, interaction, self.values)
+
+
+_RAW_INTERACTIVE_TYPES = (Button, Select, UserSelect, RoleSelect, MentionableSelect, ChannelSelect)
+
+
+def _is_button_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveButton]:
+    return isinstance(item.item, Button)
+
+
+def _is_select_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveSelect]:
+    return isinstance(item.item, Select)
+
+
+def _is_user_select_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveUserSelect]:
+    return isinstance(item.item, UserSelect)
+
+
+def _is_role_select_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveRoleSelect]:
+    return isinstance(item.item, RoleSelect)
+
+
+def _is_mentionable_select_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveMentionableSelect]:
+    return isinstance(item.item, MentionableSelect)
+
+
+def _is_channel_select_binding(item: InteractiveItem[Any, Any]) -> TypeIs[InteractiveChannelSelect]:
+    return isinstance(item.item, ChannelSelect)
+
+
+def _to_action_item(item: LegacyItemType) -> ui.Item[V]:  # noqa: C901, PLR0911
+    """Build a message component and reject configs without an explicit callback binding."""
+    if isinstance(item, Link):
+        return _Link[V](item)
+    if isinstance(item, PremiumButton):
+        return _PremiumButton[V](item)
+    if isinstance(item, _RAW_INTERACTIVE_TYPES):
+        raise TypeError(f'{type(item).__name__} must be bound with .on(callback=...) before sending a message.')
+    if _is_button_binding(item):
+        return _Button[V](item)
+    if _is_select_binding(item):
+        return _Select[V](item)
+    if _is_user_select_binding(item):
+        return _UserSelect[V](item)
+    if _is_role_select_binding(item):
+        return _RoleSelect[V](item)
+    if _is_mentionable_select_binding(item):
+        return _MentionableSelect[V](item)
+    if _is_channel_select_binding(item):
+        return _ChannelSelect[V](item)
+    if isinstance(item, InteractiveItem):
+        raise TypeError('The bound component cannot be sent as a message action component.')
+    raise TypeError(f'{type(item).__name__} is not a valid message action component.')
+
+
+def _to_v2_item(item: V2ItemType) -> ui.Item[_LayoutView]:  # noqa: PLR0911
+    match item:
+        case ActionRow(items, item_id):
+            return ui.ActionRow['_LayoutView'](*(_to_action_item(child) for child in items), id=item_id)  # type: ignore[reportUnknownArgumentType,arg-type]
+        case TextDisplay(content, item_id):
+            return ui.TextDisplay(content, id=item_id)
+        case Section(items, accessory, item_id):
+            children = tuple(
+                ui.TextDisplay['_LayoutView'](child)
+                if isinstance(child, str)
+                else ui.TextDisplay(child.content, id=child.id)
+                for child in items
+            )
+            ui_accessory: ui.Item[_LayoutView]
+            if isinstance(accessory, Thumbnail):
+                ui_accessory = ui.Thumbnail(
+                    accessory.media,
+                    description=accessory.description,
+                    spoiler=accessory.spoiler,
+                    id=accessory.id,
+                )
+            else:
+                ui_accessory = _to_action_item(accessory)
+            return ui.Section(*children, accessory=ui_accessory, id=item_id)
+        case MediaGallery(items, item_id):
+            return ui.MediaGallery(*items, id=item_id)
+        case File(media, spoiler, item_id):
+            return ui.File(media, spoiler=spoiler, id=item_id)
+        case Separator(visible, spacing, item_id):
+            return ui.Separator(visible=visible, spacing=spacing, id=item_id)
+        case Container(items, accent_color, spoiler, item_id):
+            return ui.Container(
+                *(_to_v2_item(child) for child in items),
+                accent_color=accent_color,
+                spoiler=spoiler,
+                id=item_id,
             )
 
 
-class _View(ui.View):
+class _ViewLifecycleMixin:
     config: ViewConfig
-    fut: Future[Result]
     controller: Controller
 
-    def __init__(self, config: ViewConfig, items: Sequence[ItemType], controller: Controller) -> None:
-        super().__init__(timeout=config.get('timeout'))
+    def _init_flow_state(self, config: ViewConfig, controller: Controller) -> None:
         self.config = config
-        self.set_items(items)
-        self.fut = get_running_loop().create_future()
         self.controller = controller
 
-    def set_items(self, items: Sequence[ItemType]) -> None:
+
+class _View(_ViewLifecycleMixin, ui.View):
+    def __init__(self, config: ViewConfig, items: Sequence[LegacyItemType], controller: Controller) -> None:
+        super().__init__(timeout=config.get('timeout'))
+        self.set_items(items)
+        self._init_flow_state(config, controller)
+
+    def set_items(self, items: Sequence[LegacyItemType]) -> None:
         for item in items:
-            match item:
-                case Button(_):
-                    self.add_item(_Button(item))
-                case Link(_):
-                    self.add_item(_Link(item))
-                case Select(_):
-                    self.add_item(_Select(item))
-                case UserSelect(_):
-                    self.add_item(_UserSelect(item))
-                case RoleSelect(_):
-                    self.add_item(_RoleSelect(item))
-                case MentionableSelect(_):
-                    self.add_item(_MentionableSelect(item))
-                case ChannelSelect(_):
-                    self.add_item(_ChannelSelect(item))
+            self.add_item(_to_action_item(item))  # type: ignore[arg-type, reportArgumentType]  # discord.py Item view generic is invariant.
 
-    async def _set_result(self, result: Result, messageable: Interaction) -> None:
-        if result._interaction is None:
-            result = replace(result, _interaction=messageable)
-        self.fut.set_result(result)
 
-    async def _wait(self) -> Result:
-        ret = await self.fut
-        self.fut = get_running_loop().create_future()
-        return ret
+class _LayoutView(_ViewLifecycleMixin, ui.LayoutView):
+    def __init__(self, config: ViewConfig, items: Sequence[V2ItemType], controller: Controller) -> None:
+        super().__init__(timeout=config.get('timeout'))
+        self.set_items(items)
+        self._init_flow_state(config, controller)
 
-    def _reset_fut(self) -> None:
-        """Resets the future if the current one is done."""
-        if self.fut.done():
-            self.fut = get_running_loop().create_future()
+    def set_items(self, items: Sequence[V2ItemType]) -> None:
+        for item in items:
+            self.add_item(_to_v2_item(item))
+
+
+_ViewType = _View | _LayoutView
+
+
+def create_view(
+    config: ViewConfig,
+    items: Sequence[V2ItemType] | Sequence[LegacyItemType],
+    controller: Controller,
+) -> _ViewType:
+    """Create the narrowest discord.py view capable of holding the configured items.
+
+    Timeout values come from ViewConfig; subsequent discord.py changes are left intact.
+    Static layouts only render content and terminate the flow after delivery without waiting for a timeout.
+    """
+    if is_sequence_v2_item(items):
+        view: _ViewType = _LayoutView(config=config, items=items, controller=controller)
+    else:
+        view = _View(config=config, items=items, controller=controller)
+    return view
+
+
+def view_can_produce_result(view: _ViewType) -> bool:
+    """Return whether a view contains an enabled item that can dispatch a flow callback."""
+    return any(item.is_dispatchable() and not getattr(item, 'disabled', False) for item in view.walk_children())
