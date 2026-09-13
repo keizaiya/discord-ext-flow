@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from os import getenv
+import os
 
 from discord import Client, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Result
+from discord.ext.flow import Button, InteractiveButton, Message, ModelBase, Result, run_flow
 
 TREE_STRING = """
 tree of this example
@@ -44,15 +44,15 @@ class Model(ModelBase):
     def message(self) -> Message:
         return Message(
             content=f'{TREE_STRING if self.key == "A" else ""}\nnow: {self.key}',
-            items=tuple(self.get_children(key) for key in TREE_DICT[self.key]),
+            items=tuple(self.child_button(key) for key in TREE_DICT[self.key]),
             disable_items=True,
         )
 
-    def get_children(self, key: str) -> Button:
-        def children(_: Interaction) -> Result:
+    def child_button(self, key: str) -> InteractiveButton:
+        def select_child(_: Interaction) -> Result:
             return Result.next_model(model=Model(key))
 
-        return Button(label=key, callback=children)
+        return Button(label=key).on(callback=select_child)
 
 
 class MyClient(Client):
@@ -76,7 +76,7 @@ async def on_ready() -> None:
 
 @client.tree.command(name='tree')
 async def tree(interaction: Interaction) -> None:
-    await Controller(Model('A')).invoke(interaction)
+    await run_flow(Model('A'), interaction)
 
 
-client.run(getenv('TOKEN', ''))
+client.run(os.environ['DISCORD_TOKEN'])

@@ -20,32 +20,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up CPython ${{ matrix.python-version }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install uv
+      - name: Install uv and Python
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          enable-cache: true
           python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
       - name: uv Install Dependencies
         run: |
           uv sync --group dev
-
-      - name: pyright
-        id: pyright
-        continue-on-error: true
-        run: |
-          uv run pyright .
-
-      - name: mypy
-        id: mypy
-        continue-on-error: true
-        run: |
-          uv run mypy .
 
       - name: ruff-check
         id: ruff-check
@@ -59,13 +43,39 @@ jobs:
         run: |
           uv run ruff format --check --diff .
 
+      - name: multiline-params
+        id: multiline-params
+        continue-on-error: true
+        run: |
+          uv run .github/workflows/lint_multiline_params.py discord example tests
+
+      - name: pyright
+        id: pyright
+        continue-on-error: true
+        run: |
+          uv run pyright
+
+      - name: mypy
+        id: mypy
+        continue-on-error: true
+        run: |
+          uv run mypy .
+
+      - name: pytest
+        id: pytest
+        continue-on-error: true
+        run: |
+          uv run pytest
+
       - name: Check failure
         env:
           text: "\
-            ${{ steps.ruff-format.outcome == 'failure'        && 'ruff format,'     || '' }}\
-            ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'      || '' }}\
-            ${{ steps.pyright.outcome == 'failure'            && 'pyright,'         || '' }}\
-            ${{ steps.mypy.outcome == 'failure'               && 'mypy,'            || '' }}\
+            ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'       || '' }}\
+            ${{ steps.ruff-format.outcome == 'failure'        && 'ruff format,'      || '' }}\
+            ${{ steps.multiline-params.outcome == 'failure'   && 'multiline params,' || '' }}\
+            ${{ steps.pyright.outcome == 'failure'            && 'pyright,'          || '' }}\
+            ${{ steps.mypy.outcome == 'failure'               && 'mypy,'             || '' }}\
+            ${{ steps.pytest.outcome == 'failure'             && 'pytest,'           || '' }}\
             "
         run: |
           if [ -n "${text}" ]; then

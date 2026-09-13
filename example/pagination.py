@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from os import getenv
+import os
 from random import randint
 
 from discord import Client, Embed, Intents, Interaction
 from discord.app_commands import CommandTree
-from discord.ext.flow import Button, Controller, Message, ModelBase, Paginator, Result, paginator
+from discord.ext.flow import Button, InteractiveButton, Message, ModelBase, Paginator, Result, paginator, run_flow
 
 
 class Pagination(ModelBase):
@@ -21,17 +21,17 @@ class Pagination(ModelBase):
     def message_builder(self, msgs: tuple[int, ...], current: int, max_page: int) -> Message:
         return Message(
             embeds=[Embed(title=f'{current}/{max_page}', description='\n'.join(str(i) for i in msgs))],
-            items=tuple(self.button_callback(i) for i in msgs),
+            items=tuple(self.value_button(i) for i in msgs),
             disable_items=True,
         )
 
-    def button_callback(self, state: int) -> Button:
+    def value_button(self, state: int) -> InteractiveButton:
         async def callback(interaction: Interaction) -> Result:
             print(state)
             await interaction.response.defer()
             return Result.finish_flow()
 
-        return Button(label=str(state), callback=callback)
+        return Button(label=str(state)).on(callback=callback)
 
 
 class MyClient(Client):
@@ -53,9 +53,9 @@ async def on_ready() -> None:
     print('------')
 
 
-@client.tree.command(name='basic')
-async def basic(interaction: Interaction) -> None:
-    await Controller(Pagination(randint(1, 100))).invoke(interaction)
+@client.tree.command(name='pagination')
+async def pagination(interaction: Interaction) -> None:
+    await run_flow(Pagination(randint(1, 100)), interaction)
 
 
-client.run(getenv('TOKEN', ''))
+client.run(os.environ['DISCORD_TOKEN'])
