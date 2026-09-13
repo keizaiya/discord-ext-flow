@@ -31,18 +31,6 @@ jobs:
         run: |
           uv sync --group dev
 
-      - name: pyright
-        id: pyright
-        continue-on-error: true
-        run: |
-          uv run pyright
-
-      - name: mypy
-        id: mypy
-        continue-on-error: true
-        run: |
-          uv run mypy .
-
       - name: ruff-check
         id: ruff-check
         continue-on-error: true
@@ -55,6 +43,24 @@ jobs:
         run: |
           uv run ruff format --check --diff .
 
+      - name: multiline-params
+        id: multiline-params
+        continue-on-error: true
+        run: |
+          uv run .github/workflows/lint_multiline_params.py discord example tests
+
+      - name: pyright
+        id: pyright
+        continue-on-error: true
+        run: |
+          uv run pyright
+
+      - name: mypy
+        id: mypy
+        continue-on-error: true
+        run: |
+          uv run mypy .
+
       - name: pytest
         id: pytest
         continue-on-error: true
@@ -64,10 +70,11 @@ jobs:
       - name: Check failure
         env:
           text: "\
-            ${{ steps.ruff-format.outcome == 'failure'        && 'ruff format,'     || '' }}\
-            ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'      || '' }}\
-            ${{ steps.pyright.outcome == 'failure'            && 'pyright,'         || '' }}\
-            ${{ steps.mypy.outcome == 'failure'               && 'mypy,'            || '' }}\
+            ${{ steps.ruff-check.outcome == 'failure'         && 'ruff check,'       || '' }}\
+            ${{ steps.ruff-format.outcome == 'failure'        && 'ruff format,'      || '' }}\
+            ${{ steps.multiline-params.outcome == 'failure'   && 'multiline params,' || '' }}\
+            ${{ steps.pyright.outcome == 'failure'            && 'pyright,'          || '' }}\
+            ${{ steps.mypy.outcome == 'failure'               && 'mypy,'             || '' }}\
             ${{ steps.pytest.outcome == 'failure'             && 'pytest,'           || '' }}\
             "
         run: |
